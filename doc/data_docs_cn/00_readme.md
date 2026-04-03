@@ -19,18 +19,19 @@
 
 1. 先看主表：`Company`、`Deal`、`Investor`、`Fund`、`LimitedPartner`、`Person`、`ServiceProvider`。
 2. 再看各主題 relation 表，理解一對多與多對多的延伸資料。
-3. 最後看 `07_relationships_and_joins.md` 與 `08_column_groups.md`，建立跨表視角。
+3. 最後看 `08_relationships_and_joins.md` 與 `09_column_groups.md`，建立跨表視角。
 
 ## 主題文件
 
-- `01_company.md`：公司主表與所有公司相關 relation 表。
-- `02_deal.md`：交易主表與所有交易相關 relation 表。
-- `03_investor.md`：投資機構主表與所有投資機構相關 relation 表。
-- `04_fund_lp.md`：基金、LP 與出資/回報相關表。
-- `05_person_entity.md`：人物表與 `Entity*Relation` 泛實體關係。
-- `06_service_provider.md`：服務機構與相關關係表。
-- `07_relationships_and_joins.md`：主鍵、外鍵與常見 join 路徑。
-- `08_column_groups.md`：跨表同類欄位分組索引。
+- `01_core_entity_row_counts_and_summary.md`：7 個核心對象主表的完整總覽，包含行數、欄位數與 relation 表覆蓋。
+- `02_company.md`：公司主表與所有公司相關 relation 表。
+- `03_deal.md`：交易主表與所有交易相關 relation 表。
+- `04_investor.md`：投資機構主表與所有投資機構相關 relation 表。
+- `05_fund_lp.md`：基金、LP 與出資/回報相關表。
+- `06_person_entity.md`：人物表與 `Entity*Relation` 泛實體關係。
+- `07_service_provider.md`：服務機構與相關關係表。
+- `08_relationships_and_joins.md`：主鍵、外鍵與常見 join 路徑。
+- `09_column_groups.md`：跨表同類欄位分組索引。
 
 ## 正式 CSV 一覽
 

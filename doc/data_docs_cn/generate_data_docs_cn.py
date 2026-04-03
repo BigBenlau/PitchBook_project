@@ -32,21 +32,21 @@ PRIMARY_TABLES = {
 }
 
 FILE_GROUPS = [
-    ("01_company.md", "公司資料", lambda stem: stem == "Company" or stem.startswith("Company")),
-    ("02_deal.md", "交易資料", lambda stem: stem == "Deal" or stem.startswith("Deal")),
-    ("03_investor.md", "投資機構資料", lambda stem: stem == "Investor" or stem.startswith("Investor")),
+    ("02_company.md", "公司資料", lambda stem: stem == "Company" or stem.startswith("Company")),
+    ("03_deal.md", "交易資料", lambda stem: stem == "Deal" or stem.startswith("Deal")),
+    ("04_investor.md", "投資機構資料", lambda stem: stem == "Investor" or stem.startswith("Investor")),
     (
-        "04_fund_lp.md",
+        "05_fund_lp.md",
         "基金與 LP 資料",
         lambda stem: stem in {"Fund", "LimitedPartner"} or stem.startswith("Fund") or stem.startswith("LP"),
     ),
     (
-        "05_person_entity.md",
+        "06_person_entity.md",
         "人物與泛實體資料",
         lambda stem: stem == "Person" or stem.startswith("Person") or stem.startswith("Entity"),
     ),
     (
-        "06_service_provider.md",
+        "07_service_provider.md",
         "服務機構資料",
         lambda stem: stem == "ServiceProvider" or stem.startswith("ServiceProvider"),
     ),
@@ -1128,18 +1128,19 @@ def render_readme(headers: dict[str, list[str]], descriptions: dict[str, str]) -
         "",
         "1. 先看主表：`Company`、`Deal`、`Investor`、`Fund`、`LimitedPartner`、`Person`、`ServiceProvider`。",
         "2. 再看各主題 relation 表，理解一對多與多對多的延伸資料。",
-        "3. 最後看 `07_relationships_and_joins.md` 與 `08_column_groups.md`，建立跨表視角。",
+        "3. 最後看 `08_relationships_and_joins.md` 與 `09_column_groups.md`，建立跨表視角。",
         "",
         "## 主題文件",
         "",
-        "- `01_company.md`：公司主表與所有公司相關 relation 表。",
-        "- `02_deal.md`：交易主表與所有交易相關 relation 表。",
-        "- `03_investor.md`：投資機構主表與所有投資機構相關 relation 表。",
-        "- `04_fund_lp.md`：基金、LP 與出資/回報相關表。",
-        "- `05_person_entity.md`：人物表與 `Entity*Relation` 泛實體關係。",
-        "- `06_service_provider.md`：服務機構與相關關係表。",
-        "- `07_relationships_and_joins.md`：主鍵、外鍵與常見 join 路徑。",
-        "- `08_column_groups.md`：跨表同類欄位分組索引。",
+        "- `01_core_entity_row_counts_and_summary.md`：7 個核心對象主表的完整總覽，包含行數、欄位數與 relation 表覆蓋。",
+        "- `02_company.md`：公司主表與所有公司相關 relation 表。",
+        "- `03_deal.md`：交易主表與所有交易相關 relation 表。",
+        "- `04_investor.md`：投資機構主表與所有投資機構相關 relation 表。",
+        "- `05_fund_lp.md`：基金、LP 與出資/回報相關表。",
+        "- `06_person_entity.md`：人物表與 `Entity*Relation` 泛實體關係。",
+        "- `07_service_provider.md`：服務機構與相關關係表。",
+        "- `08_relationships_and_joins.md`：主鍵、外鍵與常見 join 路徑。",
+        "- `09_column_groups.md`：跨表同類欄位分組索引。",
         "",
         "## 正式 CSV 一覽",
         "",
@@ -1348,8 +1349,8 @@ def main() -> None:
     if remaining:
         raise SystemExit(f"未覆蓋的正式 CSV：{remaining}")
 
-    write_text(OUT_DIR / "07_relationships_and_joins.md", render_relationships_doc(headers))
-    write_text(OUT_DIR / "08_column_groups.md", render_column_groups_doc(headers))
+    write_text(OUT_DIR / "08_relationships_and_joins.md", render_relationships_doc(headers))
+    write_text(OUT_DIR / "09_column_groups.md", render_column_groups_doc(headers))
 
     print(f"Generated {len(list(OUT_DIR.glob('*.md')))} markdown files in {OUT_DIR}")
 
