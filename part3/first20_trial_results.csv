@@ -1,0 +1,21 @@
+CompanyID,CompanyName,Website,MatchedColumns,FastDecision,HasCryptoProject,ProjectName,HasToken,TokenTicker,ListedWhere,ListedWhen,NeedsAgentReview,Confidence,PrimaryReason,EvidenceURLs
+103694-14,Yakimbi,www.yakimbi.com,Relation_SimilarVerticals,likely_false_positive,no,,no,,,,no,medium,主表 Verticals/Description/Keywords 沒有明顯 crypto 信號，僅因相似公司欄位命中。,
+103694-95,Yavalu,www.yavalu.com,Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表描述為投資顧問平台，crypto 命中只來自相似公司描述。,
+103700-62,Zebpay,www.zebpay.com,Verticals|Description|Keywords|Relation_Verticals|Relation_SimilarVerticals|Relation_SimilarDescriptions|Relation_CompetitorVerticals|Relation_CompetitorDescriptions,confirmed_crypto_no_token,yes,ZebPay,no,,,,no,high,主表直接顯示 Cryptocurrency/Blockchain，外部來源明確表明 ZebPay 是加密資產交易所，但未找到原生 token 證據。,https://www.zebpay.com/|https://coinmarketcap.com/exchanges/zebpay/
+103701-97,WiMi5,www.wimi5.com,Relation_SimilarVerticals|Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表是 HTML5 遊戲編輯器，沒有直接 crypto 信號。,
+103704-94,WiTopia,www.witopia.com,Relation_SimilarVerticals|Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表是 VPN / 網路安全服務，沒有直接 token 或 blockchain 對應。,
+103714-30,yoCard,www.yocard.com,Relation_SimilarVerticals|Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表描述為 loyalty card / mobile payment app，沒有直接 crypto 項目信號。,
+10031-32,Hertz,www.hertz.com,Relation_SimilarVerticals|Relation_SimilarDescriptions|Relation_CompetitorVerticals|Relation_CompetitorDescriptions,likely_false_positive,no,,no,,,,no,high,主表是傳統租車公司，crypto 命中只來自 relation 補充欄位。,
+103724-92,Zignals,www.zignals.com,Relation_SimilarVerticals|Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表描述為投資分析平台，網站與主表都不直接支持 token / crypto project。,https://www.zignals.com/
+103725-10,Zikto,www.zikto.com,Verticals|Description|Relation_Verticals,confirmed_crypto_with_token,yes,Insureum,yes,ISR,BitForex|Coinone,2018-10-22|2019-12-03,no,high,主表直接提到 blockchain；外部公開資料可將公司對應到 Insureum，且官方與交易所公告明確給出 ISR 與上市資訊。,https://insureum.medium.com/introducing-insureum-the-blockchain-based-insurance-protocol-97991d22b2c3|https://insureum.medium.com/insureums-4th-listing-bitforex-4f6b249d6957|https://coinone.co.kr/info/notice/832
+103729-24,Wordego,www.wordego.com,Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表描述為電商訪客分析與廣告技術，不像 crypto project。,
+103729-60,Wordseye World,www.wordseyeworld.com,Relation_SimilarVerticals|Relation_SimilarDescriptions|Relation_CompetitorVerticals|Relation_CompetitorDescriptions,likely_false_positive,no,,no,,,,no,medium,主表為生成式 3D 內容平台，crypto 命中僅來自相似/競品關係欄位。,
+103735-45,Workfrom,www.workfrom.co,Relation_SimilarVerticals,likely_false_positive,no,,no,,,,no,medium,主表是 workspace access 平台，沒有主表 crypto 證據。,
+103736-44,YuanV Software,www.yuanv.com,Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表是雲端安全與數據保護產品，無直接 blockchain / token 證據。,
+10053-91,Cadec Global,www.cadec.com,Relation_SimilarVerticals|Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,high,主表是車隊管理軟硬體平台，crypto 命中僅來自 relation 補充欄位。,
+103740-13,Zeer (USA),www.zeer.com,Relation_SimilarVerticals|Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表是 grocery information resource 平台，沒有直接 crypto 證據。,
+103743-91,Wheego,www.wheego.net,Relation_SimilarVerticals|Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表是自動駕駛軟體公司，沒有直接 token 或 blockchain 項目線索。,
+103745-53,Streembit,www.zovolt.com,Verticals|Keywords|Relation_Verticals|Relation_SimilarDescriptions,crypto_project_needs_agent,yes,Streembit,unknown,,,,yes,medium,主表與官方站均明確支持其為去中心化 / blockchain 項目，但未快速找到公開 token 與 listing 證據。,https://zovolt.com/|https://streembit.github.io/|https://docs.streembit.co/
+103754-44,WriteOn,www.writeon.cool,Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表是手寫筆記應用，web3 命中只來自相似公司描述。,
+103756-33,Zepol,zepol.com,Relation_SimilarVerticals,likely_false_positive,no,,no,,,,no,medium,主表是貿易數據工具，沒有直接 crypto 項目證據。,
+103763-62,All My Faves,allmyfaves.com,Relation_SimilarDescriptions,likely_false_positive,no,,no,,,,no,medium,主表是 web discovery 平台，web3 命中只來自相似公司描述。,
