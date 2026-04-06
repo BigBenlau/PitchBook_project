@@ -1,0 +1,6 @@
+Using keywords: crypto, blockchain, web3
+Searching keywords in company_new.csv columns: Verticals, Description, Keywords, Relation_Verticals, Relation_SimilarVerticals, Relation_SimilarDescriptions, Relation_CompetitorVerticals, Relation_CompetitorDescriptions
+Wrote 61753 matched rows to /home/user/mc05427/ben/pitchbook/part2_build_crypto_candidate/output/crypto_company.csv
+Searching keywords in investor_new.csv columns: PreferredVerticals, Description
+Wrote 8100 matched rows to /home/user/mc05427/ben/pitchbook/part2_build_crypto_candidate/output/crypto_investor.csv
+Filtered outputs written under /home/user/mc05427/ben/pitchbook/part2_build_crypto_candidate/output
