@@ -3,3 +3,7 @@ crypto_vc_bak
 crypto_vc
 *.pyc
 __pycache__/
+STANFORD_20260201.zip
+part1_summarize_crypto_keyword_hits/crypto_blockchain_keyword_hits.csv
+part2_build_crypto_candidate/output/
+part5_analyse_company_to_token/agent_task_batches/crypto_company/
