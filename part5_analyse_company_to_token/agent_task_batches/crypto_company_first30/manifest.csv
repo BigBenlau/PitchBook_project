@@ -1,0 +1,31 @@
+task_index,batch_index,batch_file,CompanyID,CompanyName,normalized_domain,allowed_sources,agent_task_scope
+1,1,batch_0001.jsonl,103700-62,Zebpay,zebpay.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+2,1,batch_0001.jsonl,103725-10,Zikto,zikto.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+3,1,batch_0001.jsonl,103745-53,Streembit,zovolt.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+4,1,batch_0001.jsonl,103794-31,Zeconomy,zeconomy.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+5,1,batch_0001.jsonl,103893-85,Coin Apex,coinapex.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+6,1,batch_0001.jsonl,103893-94,Coinhako,coinhako.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+7,1,batch_0001.jsonl,103897-63,Contrib,contrib.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+8,1,batch_0001.jsonl,103926-61,Unbound Security (Network Management Software),unboundsecurity.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+9,1,batch_0001.jsonl,104088-70,Leondrino,leondrino.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+10,1,batch_0001.jsonl,10501-57,Bed Bath & Beyond,bedbathandbeyond.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+11,1,batch_0001.jsonl,104223-52,Aurovine,aurovine.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+12,1,batch_0001.jsonl,104278-78,WikiRealty,wikirealty.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+13,1,batch_0001.jsonl,292467-25,Fidectus,fidectus.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+14,1,batch_0001.jsonl,292577-86,Pluang,pluang.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+15,1,batch_0001.jsonl,292754-80,Kriptown,kriptown.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+16,1,batch_0001.jsonl,292821-85,Gigantec Media,gigantec.media,official_site|coingecko|coinmarketcap,has_token|token_ticker
+17,1,batch_0001.jsonl,293059-27,ANote Music,anotemusic.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+18,1,batch_0001.jsonl,104374-63,Provenance,provenance.org,official_site|coingecko|coinmarketcap,has_token|token_ticker
+19,1,batch_0001.jsonl,481191-94,Boardroom 35,boardroom.tv,official_site|coingecko|coinmarketcap,has_token|token_ticker
+20,1,batch_0001.jsonl,481194-91,GetHedge,gethedge.io,official_site|coingecko|coinmarketcap,has_token|token_ticker
+21,1,batch_0001.jsonl,481197-61,CySecure,cysecure.us,official_site|coingecko|coinmarketcap,has_token|token_ticker
+22,1,batch_0001.jsonl,481230-73,Januar,januar.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+23,1,batch_0001.jsonl,481220-65,DeSpace Protocol,despace.io,official_site|coingecko|coinmarketcap,has_token|token_ticker
+24,1,batch_0001.jsonl,104704-48,SFOX,sfox.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+25,1,batch_0001.jsonl,104756-14,VALIDATED ID,validatedid.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+26,1,batch_0001.jsonl,481264-03,New Renaissance,newrenaissance.io,official_site|coingecko|coinmarketcap,has_token|token_ticker
+27,1,batch_0001.jsonl,481266-01,Cybera,cybera.io,official_site|coingecko|coinmarketcap,has_token|token_ticker
+28,1,batch_0001.jsonl,293426-47,Good Stock,goodstocksoups.com,official_site|coingecko|coinmarketcap,has_token|token_ticker
+29,1,batch_0001.jsonl,481864-42,Angle (Financial Software),angle.money,official_site|coingecko|coinmarketcap,has_token|token_ticker
+30,1,batch_0001.jsonl,481270-69,SolarMente,solarmente.es,official_site|coingecko|coinmarketcap,has_token|token_ticker
