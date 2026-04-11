@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crypto Token Review"
+  short_description: "Review token and ticker evidence for crypto companies"
+  default_prompt: "Use this skill to review whether companies have crypto tokens and token tickers using only official sites, CoinGecko, and CoinMarketCap."
