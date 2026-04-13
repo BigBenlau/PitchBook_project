@@ -1,0 +1,31 @@
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,search_tier,project_search_required,risk_flags,classifier_reason
+1,103700-62,Zebpay,zebpay.com,exchange_or_broker,high,full,yes,"[""exchange_or_broker"", ""former_name""]",Former name and current site show a crypto exchange/broker; full search is needed to rule out any native token.
+2,103725-10,Zikto,zikto.com,service_provider,low,light,yes,"[""blockchain_mentioned"", ""insurance_vertical""]","Insurance platform with blockchain language, but no strong owned token signal; bounded search is enough."
+3,103822-74,Streembit,zovolt.com,infrastructure_or_data,low,light,yes,"[""decentralized_p2p"", ""security_context""]","Decentralized P2P communication software uses blockchain language, but token likelihood is low."
+4,103893-81,Zeconomy,zeconomy.com,protocol_or_network,high,full,yes,"[""token_keyword"", ""blockchain_platform""]","Blockchain/finance platform has an apparent own token ecosystem, so deep search is justified."
+5,103949-89,Coin Apex,coinapex.com,traditional_business,none,skip_candidate,no,"[""payment_processor"", ""bitcoin_keyword""]",Bitcoin payment processor with no owned project signal beyond payment processing.
+6,103969-34,Coinhako,coinhako.com,exchange_or_broker,high,full,yes,"[""exchange_or_broker"", ""crypto_keywords""]","Digital asset exchange/broker and potentially project-affiliated, so full search."
+7,104046-10,Contrib,contrib.com,dapp_or_product,high,full,yes,"[""token_project"", ""marketplace""]","Platform explicitly markets CTB token sale/staking, so full token mapping search."
+8,104354-21,Unbound Security (Network Management Software),unboundsecurity.com,security_or_compliance,none,skip_candidate,no,"[""cryptography_keyword""]","Cryptography/security vendor, not a crypto project candidate."
+9,104387-40,Leondrino,leondrino.com,protocol_or_network,medium,full,yes,"[""token_keyword"", ""private_currency""]",Currency management platform for branded currencies; needs deep search to determine whether any public ticker exists.
+10,104406-18,Bed Bath & Beyond,bedbathandbeyond.com,traditional_business,none,skip_candidate,no,"[""weak_keyword""]",Ecommerce retailer with weak blockchain relevance and no owned crypto project.
+11,104430-14,Aurovine,aurovine.com,dapp_or_product,high,full,yes,"[""blockchain_music"", ""token_keyword""]","Blockchain music platform with an explicit token economy signal, so deep mapping is warranted."
+12,104479-69,WikiRealty,wikirealty.com,traditional_business,none,skip_candidate,no,"[""weak_keyword""]",Real-estate knowledge platform with only weak blockchain keyword noise.
+13,104518-76,Fidectus,fidectus.com,infrastructure_or_data,low,light,yes,"[""energy_trading"", ""blockchain_keyword""]","Blockchain-enabled energy settlement software, but no strong token signal."
+14,104539-87,Pluang,pluang.com,investment_or_holdings,low,skip_candidate,no,"[""investment_app"", ""crypto_keyword""]",Investment app with crypto access but no owned project/token signal.
+15,104552-84,Kriptown,kriptown.com,protocol_or_network,medium,full,yes,"[""tokenization"", ""secondary_market""]",Tokenization and secondary-market platform may host project tokens; search deeply for any public ticker.
+16,104556-45,Gigantec Media,gigantec.media,service_provider,medium,full,yes,"[""token_keyword"", ""community_economy""]",Branded-token services suggest crypto project adjacency and require deeper search.
+17,104571-63,ANote Music,anotemusic.com,investment_or_holdings,low,full,yes,"[""royalty_marketplace"", ""blockchain_keyword""]",Blockchain royalty marketplace may have a tokenized layer; deep search needed.
+18,104579-12,Provenance,provenance.org,protocol_or_network,high,full,yes,"[""blockchain_platform"", ""supply_chain""]",Provenance Blockchain has a native token ecosystem and should be fully mapped.
+19,104586-37,Boardroom 35,boardroom.tv,media_or_education,none,skip_candidate,no,"[""news_portal"", ""crypto_keyword""]",Sports news portal with no owned crypto project.
+20,104591-75,GetHedge,gethedge.io,service_provider,low,light,yes,"[""crypto_service"", ""payroll_keyword""]",Crypto payroll/service business but no owned fungible token signal.
+21,104612-16,CySecure,cysecure.us,security_or_compliance,none,skip_candidate,no,"[""identity_keyword"", ""blockchain_keyword""]",Identity/security vendor with no token/project signal.
+22,104617-34,Januar,januar.com,service_provider,low,light,yes,"[""crypto_gateway"", ""payment_gateway""]",Crypto payment gateway may touch projects but no obvious native token.
+23,104627-53,DeSpace Protocol,despace.io,protocol_or_network,high,full,yes,"[""defi_keyword"", ""nft_keyword""]",DeFi/NFT protocol with clear native token mapping.
+24,104641-57,SFOX,sfox.com,exchange_or_broker,high,full,yes,"[""exchange_or_broker"", ""trading_platform""]",Crypto trading platform; full search to verify any native token.
+25,104657-15,VALIDATED ID,validatedid.com,security_or_compliance,none,skip_candidate,no,"[""identity_keyword"", ""document_signature""]",Digital identity software with no owned crypto project signal.
+26,104659-96,New Renaissance,newrenaissance.io,gaming_or_nft,low,full,yes,"[""nft_keyword"", ""marketplace""]",NFT marketplace may have an ecosystem token; deep search to verify.
+27,104663-93,Cybera,cybera.io,security_or_compliance,none,skip_candidate,no,"[""security_keyword""]",Financial cybersecurity platform with no token signal.
+28,104667-37,Good Stock,goodstocksoups.com,gaming_or_nft,low,full,yes,"[""gambling_keyword"", ""blockchain_keyword""]",Blockchain gambling platform with possible tokenized ecosystem; needs search.
+29,481864-42,Angle (Financial Software),angle.money,protocol_or_network,high,full,yes,"[""stablecoin_keyword"", ""protocol_keyword""]",Angle is a stablecoin protocol with ANGLE plus EURA/USDA token pages.
+30,481270-69,SolarMente,solarmente.es,traditional_business,none,skip_candidate,no,"[""energy_trading_keyword"", ""blockchain_keyword""]",Solar installer business with weak blockchain keyword only.

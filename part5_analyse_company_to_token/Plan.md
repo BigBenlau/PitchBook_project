@@ -1,389 +1,710 @@
-# Part3: `crypto_company.csv` 的 Project / Token / Listing 搜索方法
+# Part5: Company-to-Token Harness Plan
 
-## 目標
+## 0. Required Read Order
 
-對 `part2_build_crypto_candidate/output/crypto_company.csv` 中的每家公司，分開判斷 4 件事：
+Every part5 run, worker instruction, prompt update, script update, or result validation must treat this file as the controlling contract.
 
-1. `IsCryptoRelatedCompany`
-2. `HasCryptoProject`
-3. `HasToken`
-4. `ListedWhere` / `ListedWhen`
-5. 是不是交易所(CEX, DEX)
-6. Associate with exchange
+Before using the part5 skill or launching any worker:
 
-這 4 件事不能混在一起判斷。
+1. Read this `Plan.md`.
+2. Read `part5_analyse_company_to_token/agent_prompt_template.md`.
+3. Use the scripts in `part5_analyse_company_to_token/scripts/` as the execution harness.
 
-特別是：
+If a prompt, worker instruction, skill file, or script behavior conflicts with this plan, this plan wins unless the user explicitly changes the plan.
 
-- `crypto 相關公司` 不等於 `有對應 crypto project`
-- `crypto project` 不等於 `已發 token`
-- `交易所` 不等於 `發過 token`
-- 找不到證據不等於 `no`
+## 1. Goal
 
-因此 part3 的核心原則是：
+Input:
 
-- `yes` 必須有正證據
-- `no` 也必須有反證或明確排除證據
-- 否則一律標 `unknown`
+- `part2_build_crypto_candidate/output/crypto_company.csv`
 
-本輪實際執行重點先收斂到：
+Output:
 
-- `HasToken`
-- `TokenTicker`
+- `part5_analyse_company_to_token/agent_runs/crypto_company/classifier_results.csv`
+- `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`
+- `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`
+- `part5_analyse_company_to_token/agent_runs/crypto_company/checkpoint.json`
 
----
+The task is to map each company to zero, one, or multiple crypto projects and fungible token tickers.
 
-## 第一部分：所有 company 都直接進 agent
+The task is not:
 
-本版不再做「先內部快篩、再決定哪些 company 進 agent」。
+- mapping NFT collections without fungible tokens
+- general crypto-company classification as a final product
+- exchange classification as a final product
+- listing venue/date research
+- investment or market analysis
 
-改成：
+The final result must contain exactly one row per company. A company with multiple projects or multiple fungible tokens still has one row, with list-valued fields.
 
-1. `crypto_company.csv` 中所有提供的 company，一律交給 agent
-2. agent 的核心任務是查：
-   - 這家公司 / 對應 project 有沒有 token
-   - 如果有，`TokenTicker` 是什麼
-3. 主表欄位只用來提供 agent 搜索上下文，不再用來做內部初判
+## 2. Harness Architecture
 
-### 主表欄位的用途
+The part5 process is a harness around LLM workers. Workers are execution units, not the source of truth for data integrity.
 
-仍然可以把下列欄位傳給 agent，幫助它降低重名與品牌混淆：
+The pipeline has three agent stages:
 
-- `CompanyName`
-- `Website`
-- `Verticals`
-- `Description`
-- `Keywords`
-- `MatchedColumns`
+1. Company relevance classifier and search router.
+2. Project/token search worker.
+3. Round-end verification subagent.
 
-但這些欄位只作為：
+Pipeline:
 
-- query 提示
-- 官方域名定位
-- 品牌名稱 disambiguation
+1. Extract compact company inputs from `crypto_company.csv`.
+2. Build fixed-size JSONL batches.
+3. Run a classifier/router pass for every company.
+4. Write classifier/router decisions to `classifier_results.csv`.
+5. Route each company to a search tier: `full`, `light`, or `skip_candidate`.
+6. Run full project/token search only for `full` rows.
+7. Run a bounded lightweight token-existence check for `light` rows.
+8. For `skip_candidate` rows, write a completed no-token row only when the classifier/router reason clearly explains why a token search budget is not justified.
+9. Each worker writes one `results.csv` for its assigned batch.
+10. Collector performs structural validation on classifier/router and worker outputs.
+11. Before the round ends, spawn a fresh verifier subagent to independently check token correctness for the round.
+12. The verifier checks whether each company's `token_ticker` list has omissions, extra tickers, wrong project mapping, or non-fungible/stock ticker contamination.
+13. Main agent reviews the verifier report, fixes rows or marks manual review/rerun decisions.
+14. Collector or coordinator merges verified clean rows into final `results.csv`.
+15. Extract `needs_manual_review.csv`.
+16. Update `checkpoint.json`.
+17. Delete temporary worker run directories after their rows are merged.
 
-不再作為：
+Scripts:
 
-- `HasToken = yes/no`
-- `TokenTicker = xxx`
-- `IsCryptoRelatedCompany = yes/no`
+- `scripts/1_build_company_token_batches.py`
+- `scripts/2_prepare_worker_runs.py`
+- `scripts/3_collect_results.py`
 
-的內部判斷依據。
+Recommended batch/run parameters:
 
-### 這樣改的目的
+- `batch_size = 30`
+- `workers = 5`
+- one operational block = 3 rounds = 15 batches = 450 companies
 
-- 避免內部規則把 absence 當成 `no`
-- 避免 relation 誤抓時被本地規則放大
-- 把所有 token / ticker 判斷統一交給同一套外部證據口徑
+### Model Selection Contract
 
----
+Default model policy:
 
-## 第二部分：重新定義 part3 的判斷口徑
+- Use `gpt-5.4-mini` for high-volume company classification.
+- Use `gpt-5.4-mini` for normal project/token search workers.
+- Use `gpt-5.4-mini` for first-pass round-end verification.
+- Escalate only difficult cases to `gpt-5.4`.
+- Use `gpt-5.3-codex` for harness code, script edits, prompt-template edits, collector changes, and debugging, not for routine company/token research.
 
-### 1. `IsCryptoRelatedCompany`
+Reasoning effort:
 
-定義：
+- Classifier: `gpt-5.4-mini`, `low` or `medium`.
+- Normal project/token search: `gpt-5.4-mini`, `medium`.
+- Ambiguous project/token search: `gpt-5.4-mini`, `high`.
+- Round-end verifier: `gpt-5.4-mini`, `high`.
+- Escalation verifier or rerun: `gpt-5.4`, `high`.
+- Harness engineering and code changes: `gpt-5.3-codex`, `medium` or `high` depending on complexity.
 
-- 公司是否明確在做 crypto / blockchain 相關業務
+Escalate from `gpt-5.4-mini` to `gpt-5.4` when any of these are true:
 
-`yes` 的證據：
+- verifier and worker disagree on token tickers
+- project has multiple brands, former names, foundations, DAOs, or acquired entities
+- company appears to map to multiple projects or multiple fungible tokens
+- source evidence conflicts across official docs, token data pages, explorers, or secondary sources
+- skipped-search decision would exclude a company with medium or high crypto project likelihood
+- previous round produced a systematic error pattern
 
-- 官方網站明確描述自己是 crypto / blockchain company
-- 或 `Verticals` / 官方文案 / 結構化來源一致支持
+Do not use `gpt-5.4` for every row by default. The expected workload is 17,000+ companies, so the cost-effective path is:
 
-`no` 的證據：
+1. broad pass with `gpt-5.4-mini`
+2. mandatory fresh verifier with `gpt-5.4-mini`
+3. targeted reruns/escalations with `gpt-5.4`
 
-- 官方網站與主表都明確顯示是非 crypto 業務
-- 且所有 crypto 信號只來自 relation 誤帶
+Do not use `gpt-5.3-codex` as the default research worker unless the task includes substantial repo editing, script execution, or long-running coding-agent behavior. For token research, its coding optimization and higher output cost make it less cost-effective than `gpt-5.4-mini`.
 
-否則：
+## 3. Input Contract
 
-- `unknown`
+The only source dataset for part5 is:
 
-### 2. `HasCryptoProject`
+- `part2_build_crypto_candidate/output/crypto_company.csv`
 
-定義：
+The extracted agent input should keep fields useful for:
 
-- 公司是否對應一個具名的 crypto product / protocol / network / exchange / appchain / wallet ecosystem
+- classifying company business type
+- explaining why the company was included in `crypto_company.csv`
+- detecting whether the company likely has a crypto project
+- identifying official domains, products, whitepapers, docs, or token pages
+- disambiguating company, brand, project, and token names
 
-這裡要明確指出：
+Required fields:
 
-- `exchange` 可以是一種 crypto project
-- 但 `exchange` 本身不代表 `HasToken = yes`
-
-`yes` 的證據：
-
-- 官方網站或 docs 中有明確 project 名稱
-- 或第三方結構化平台明確把該公司映射到某個 crypto project
-
-`no` 的證據：
-
-- 官方資訊明確說只是服務商 / 咨詢 / 傳統軟體，且沒有對應 crypto product
-
-否則：
-
-- `unknown`
-
-### 3. `HasToken`
-
-定義：
-
-- 該 project 是否真的發行過可識別的 token / coin
-
-`yes` 的證據：
-
-- 官方 docs / whitepaper / blog 直接提 token
-- CoinGecko / CoinMarketCap 有明確 token 頁
-
-`no` 的證據：
-
-- 官方明確聲明沒有 native token
-- 或官方 FAQ / docs 明確排除 token 設計
-
-注意：
-
-- 單純找不到 token，不得判 `no`
-- 應標 `unknown`
-
-### 4. `ListedWhere` / `ListedWhen`
-
-只在 `HasToken = yes` 的前提下才查。
-
-但要注意：
-
-- 這不是本輪最小可行版本的主目標
-- 若 agent 被限制只看官網、CoinGecko、CoinMarketCap，則 listing 證據通常不完整
-- 因此本輪可允許 `ListedWhere` / `ListedWhen` 大量留空或標 `unknown`
-
-優先證據：
-
-1. 交易所官方 announcement
-2. 官方 blog / announcement
-3. CoinGecko / CoinMarketCap market 頁
-4. GeckoTerminal / DexScreener
-
-若只有交易市場但沒有日期：
-
-- `ListedWhere` 可以填
-- `ListedWhen` 標空
-- 不是 `no`
-
-若後續要把 listing 做成高置信度欄位，應重新放開來源白名單。
-
----
-
-## 第三部分：agent 應該去哪裡查
-
-本版對 agent 設白名單，只允許看 3 類來源：
-
-1. 官方網站
-2. CoinGecko
-3. CoinMarketCap
-
-其中「官方網站」可包含同一官方域名下的：
-
-- 首頁
-- product / protocol 頁
-- docs / litepaper / whitepaper
-- blog / announcement
-
-但不擴散到其他第三方網站。
-
-使用原則：
-
-- 官方來源優先於第三方
-- 只看這 3 類來源，不做泛搜索擴散
-- CoinGecko / CoinMarketCap 用來補強 token 名稱與 ticker
-- 若 3 類來源都沒有足夠證據，結論應標 `unknown`
-
-### 來源限制是否足夠
-
-若本輪目標只是：
-
-- 判斷 `HasToken`
-- 找 `TokenTicker`
-
-那麼只看官網、CoinGecko、CoinMarketCap，對大多數主流或中等知名項目通常足夠。
-
-但要明確限制：
-
-- 對非常早期、已下架、冷門、已改名、只在鏈上存在而沒有完整聚合頁的項目，這 3 類來源可能不夠
-- 對 `HasToken = no` 的結論尤其不夠穩，因為「查不到」不能推出 `no`
-- 對 `ListedWhere` / `ListedWhen` 幾乎不夠，因為這通常需要交易所公告或市場頁補證
-
-因此本版可以成立的前提是：
-
-- 重點任務縮到 `HasToken` 與 `TokenTicker`
-- `unknown` 接受率要高
-- 不要求只靠這 3 類來源完成強證據的 listing 判斷
-
----
-
-## 第四部分：如何限制 agent 耗時
-
-既然所有 company 都要進 agent，節流方式不再是「先內部判斷」，而是「限制 agent 的任務範圍與網址數量」。
-
-### 方法 1：每家公司只回答兩個核心問題
-
-agent 只需要回答：
-
-1. 有沒有 token
-2. token ticker 是什麼
-
-不要在同一輪要求 agent 同時做：
-
-- 全面公司分類
-- project taxonomy
-- listing 深搜
-- 歷史更名追蹤
-
-這樣可以明顯減少單家公司耗時。
-
-### 方法 2：每家公司只看 3 類來源
-
-固定來源：
-
-- 官方網站
-- CoinGecko
-- CoinMarketCap
-
-不再讓 agent 自行擴散到：
-
-- DefiLlama
-- GeckoTerminal
-- DexScreener
-- 新聞
-- 第三方媒體
-- 論壇 / 社媒
-
-### 方法 3：先官方，再兩個聚合站
-
-推薦固定順序：
-
-1. 用 `Website` 鎖定官方域名與品牌名
-2. 在官方域名下看是否明確提到 token / ticker
-3. 再看 CoinGecko 是否有對應 token 頁
-4. 最後看 CoinMarketCap 是否有對應 token 頁
-
-### 方法 4：為 agent 設結果上限
-
-每家公司最多產出以下結論之一：
-
-- `HasToken = yes`, `TokenTicker = ...`
-- `HasToken = unknown`, `TokenTicker =`
-- `HasToken = no`
-
-其中：
-
-- 只有官方或兩個聚合站提供正證據時，才寫 `yes`
-- 只有官方明確否認 token 時，才寫 `no`
-- 其餘全部寫 `unknown`
-
-### 方法 5：交易所仍然不能被特殊簡化
-
-即使公司明顯是 exchange：
-
-- 也不能因為是交易所，就推定有 token
-- 也不能因為 3 個來源暫時沒找到，就推定沒有 token
-
-交易所在本版仍按同一套證據規則處理。
-
----
-
-## 第五部分：輸出結構必須帶證據
-
-part3 最終每一列都必須帶可檢查證據。
-
-建議輸出欄位：
-
+- `task_index`
 - `CompanyID`
 - `CompanyName`
+- `CompanyAlsoKnownAs`
+- `CompanyFormerName`
+- `CompanyLegalName`
 - `Website`
-- `AgentPriority`
-- `IsCryptoRelatedCompany`
-- `IsCryptoRelatedCompanyEvidence`
-- `HasCryptoProject`
-- `ProjectName`
-- `HasCryptoProjectEvidence`
-- `HasToken`
-- `TokenTicker`
-- `HasTokenEvidence`
-- `ListedWhere`
-- `ListedWhen`
-- `ListingEvidence`
-- `EvidenceURLs`
-- `EvidenceSourceTypes`
-- `Confidence`
-- `NeedsManualReview`
+- `normalized_domain`
+- `ParentCompany`
+- `Exchange`
+- `Ticker`
+- `Verticals`
+- `EmergingSpaces`
+- `Description`
+- `Keywords`
+- `MatchedKeywords`
+- `MatchedColumns`
 
-其中：
+Optional fields:
 
-- `EvidenceURLs`
-  - 用 `|` 串接多個來源
-- `EvidenceSourceTypes`
-  - 例如 `official_site|coingecko|coinmarketcap`
+- `HQLocation`
+- `HQCountry`
 
-### 證據要求
+Useful but bounded context:
 
-- 任何 `yes` 都必須有 URL
-- 任何 `no` 都必須有 URL 或官方明確表述
-- 如果做不到，就標 `unknown`
+- fields explaining why the row is crypto/blockchain-related
+- fields indicating official docs, whitepaper, protocol, token, or product names, if present
+- concise relation context only when it directly explains why the company entered the crypto candidate set
 
-這是 part3 必須執行的硬規則。
+Do not pass these fields to workers by default:
 
----
+- financing, valuation, revenue, EBITDA, debt, investor, and deal fields
+- address, phone, fax, email, and contact fields
+- social media URLs unless needed to identify the official project
+- PitchBook profile metadata that does not help classification or project mapping
+- long relation descriptions that overwhelm the prompt
 
-## 第六部分：修正前 20 間試跑的口徑
+Text limits:
 
-### Zebpay
+- `Description`: max 700 characters
+- `Keywords`: max 300 characters
+- any relation/explanation context: max 300 characters
 
-前一版問題：
+`normalized_domain` must be derived from `Website` when not present. Remove `www.` and lower-case the host.
 
-- 把它作為 crypto 相關公司是合理的
-- 但不能因為是交易所，就直接當作「沒有 token」
+## 4. Stage 1: Company Relevance Classifier and Search Router
 
-修正後應該是：
+Every company must first pass through a classifier/router agent before project/token search.
 
-- `IsCryptoRelatedCompany = yes`
-- `HasCryptoProject = yes`
-- `ProjectName = ZebPay`
-- `HasToken = unknown`
+The classifier/router answers:
 
-除非找到官方或結構化來源明確說沒有 native token，才可寫 `no`
+- What type of company is this?
+- Why is it in `crypto_company.csv`?
+- Is it likely connected to a crypto project that could have a fungible token?
+- What search tier should be used so the harness spends enough tokens to find likely tickers without wasting tokens on clearly out-of-scope companies?
 
-### Zikto / Insureum
+The classifier/router is a routing gate, not a final skip gate. It must not decide the final `token_ticker` value. It assigns a search budget and records why that budget is appropriate.
 
-前一版可保留，但仍需統一成證據驅動格式：
+Classifier/router output artifact:
 
-- `HasToken = yes`
-- `TokenTicker = ISR`
-- `ListedWhere` 與 `ListedWhen` 都必須附來源 URL
+- `agent_runs/crypto_company/classifier_results.csv`
 
-### Streembit
+`classifier_results.csv` must use this header:
 
-前一版判斷方向合理，但仍需按新格式拆成：
+```csv
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,search_tier,project_search_required,risk_flags,classifier_reason
+```
 
-- `IsCryptoRelatedCompany`
-- `HasCryptoProject`
-- `HasToken`
-- `Listing`
+Classifier/router output fields:
 
-不能只用一句 `needs agent` 概括。
+- `company_type`
+- `crypto_project_likelihood`
+- `search_tier`
+- `project_search_required`
+- `risk_flags`
+- `classifier_reason`
 
----
+Allowed `company_type` values:
 
-## 本輪輸出調整
+- `protocol_or_network`
+- `dapp_or_product`
+- `exchange_or_broker`
+- `wallet_or_custody`
+- `mining_or_validator`
+- `infrastructure_or_data`
+- `security_or_compliance`
+- `service_provider`
+- `investment_or_holdings`
+- `media_or_education`
+- `gaming_or_nft`
+- `traditional_business`
+- `unclear`
 
-本輪不再沿用舊版 part3 的「先內部快篩，再決定是否進 agent」流程。
+Allowed `crypto_project_likelihood` values:
 
-後續 part3 應改成：
+- `high`
+- `medium`
+- `low`
+- `none`
+- `unclear`
 
-1. 所有提供的 company 一律交 agent
-2. agent 只查官網、CoinGecko、CoinMarketCap
-3. agent 的主要輸出先聚焦在 `HasToken` 與 `TokenTicker`
-4. 所有最終 `yes / no / unknown` 都要帶證據與 URL
-5. 若 3 類來源不足以支持結論，一律標 `unknown`
+Allowed `project_search_required` values:
 
-對應的顯式 prompt 模版見：
+- `yes`
+- `no`
 
-- `part4/agent_prompt_template.md`
+Allowed `search_tier` values:
+
+- `full`
+- `light`
+- `skip_candidate`
+
+Use `search_tier = full` when any of these are true:
+
+- the company appears to operate a protocol, network, dapp, exchange, wallet, tokenized product, or blockchain-native product
+- the row mentions a project, token, whitepaper, docs, protocol, chain, app, DAO, or ecosystem
+- company names, aliases, former names, or website suggest a project identity that may differ from the legal company name
+- the classifier cannot confidently exclude project/token relevance
+
+Use `search_tier = light` when the company is crypto-adjacent or low-likelihood but still has enough signal that a cheap token-existence check is justified, for example:
+
+- service provider, infrastructure, media, mining, validator, custody, analytics, security, compliance, NFT, gaming, or investment-related company with some crypto/project context
+- official domain, aliases, former names, or description contain token/project-like terms, but the row does not justify a full deep search
+- source context is thin, ambiguous, or likely stale
+
+Use `search_tier = skip_candidate` only when the company is clearly out of scope for fungible token mapping and even a lightweight token-existence check is not justified, for example:
+
+- traditional business with only incidental crypto keyword matches
+- consulting, legal, accounting, recruitment, marketing, events, or generic service provider with no project/product signal
+- investor, holding company, VC, or accelerator with no owned crypto project signal
+- media, education, or research company with no owned crypto project signal
+- mining, validator, custody, analytics, security, or compliance company with no owned token/project signal
+- NFT-only, collectible-only, or gaming asset company with no fungible token signal
+
+Set `project_search_required = yes` for `search_tier = full` or `search_tier = light`.
+
+Set `project_search_required = no` only for `search_tier = skip_candidate`.
+
+`risk_flags` should be a JSON list string using short labels when applicable, for example:
+
+- `alias_or_former_name`
+- `token_keyword`
+- `protocol_keyword`
+- `nft_or_gaming`
+- `stock_ticker_present`
+- `domain_missing`
+- `brand_project_mismatch`
+- `multiple_project_signal`
+- `thin_source_context`
+
+Conservative rule:
+
+- If the classifier/router is unsure, use `search_tier = full`.
+- If token usage is a concern but project/token relevance cannot be excluded, use `search_tier = light`, not `skip_candidate`.
+- `skip_candidate` requires a clear `classifier_reason` grounded in company type and source row context.
+- The classifier/router must keep `classifier_reason` short. Do not spend tokens writing long explanations.
+
+## 5. Stage 2: Project/Token Search Worker
+
+The project/token search worker runs according to the classifier/router `search_tier`.
+
+Search tiers:
+
+- `full`: use normal project/token search depth.
+- `light`: use a bounded token-existence check. Prefer the source row, official domain when available, exact company/project aliases, and major token data pages. Stop after the bounded check when no token/project signal is found.
+- `skip_candidate`: do not run full or light search. Write a completed no-token row from the classifier/router decision only when the `classifier_reason` is specific enough to justify the skip.
+
+Worker constraints:
+
+- Read only its assigned `tasks.jsonl` / batch JSONL.
+- Write only its assigned run directory.
+- Write exactly one row per task.
+- Do not modify final result files directly.
+- Do not modify another worker's run directory.
+- Do not rewrite source batches or input dataset.
+
+Full search policy:
+
+- Workers may search freely.
+- Workers are not limited to official sites, CoinGecko, or CoinMarketCap.
+- Use search to identify the correct company, project, product, protocol, and token mapping.
+- Prefer primary sources when available, but allow reputable secondary sources for discovery and corroboration.
+- Search depth should be proportional to classifier likelihood and ambiguity.
+
+Light search policy:
+
+- Keep token usage low.
+- Use exact names, aliases, former names, and normalized domain before broad discovery queries.
+- Prefer official site/domain and exact-match token data pages.
+- Do not browse broadly through generic secondary sources unless the first-pass evidence shows a possible owned project or token.
+- If the light check finds a plausible token or project signal, upgrade the row to full search or mark `needs_manual_review = yes` if the round budget cannot support a full rerun.
+
+Recommended source priority:
+
+1. Official website, docs, whitepaper, litepaper, blog, FAQ, governance forum, or announcement.
+2. Token data pages such as CoinGecko and CoinMarketCap.
+3. Project documentation, GitHub, explorer, exchange pages, audited docs, or foundation pages.
+4. Reputable secondary sources only when needed for disambiguation.
+
+Do not use weak evidence alone:
+
+- generic search snippets
+- social media posts without stronger corroboration
+- copied token lists without project mapping
+- token-like strings that do not map back to the company/project
+
+## 6. Output Schema
+
+All worker and final result CSVs must use this exact v2 header:
+
+```csv
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_ticker,token_name,token_url,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+```
+
+Column rules:
+
+- `task_index`: integer, unique, continuous within completed range
+- `company_id`: PitchBook `CompanyID`
+- `company_name`: source `CompanyName`
+- `normalized_domain`: normalized official domain when available
+- `company_type`: classifier output
+- `crypto_project_likelihood`: classifier output
+- `project_search_required`: `yes` or `no`
+- `project_search_reason`: short classifier explanation
+- `project_name`: JSON list string
+- `project_url`: JSON list string
+- `status`: must be `completed`
+- `completed_at`: ISO timestamp when available; blank is allowed for worker output
+- `token_ticker`: JSON list string
+- `token_name`: JSON list string
+- `token_url`: JSON list string
+- `has_token_evidence`: short evidence summary
+- `evidence_urls`: `|`-separated URLs
+- `evidence_source_types`: `|`-separated source type labels
+- `confidence`: `high`, `medium`, or `low`
+- `needs_manual_review`: `yes` or `no`
+
+No-token or skipped-search case:
+
+- `token_ticker = []`
+- `token_name = []`
+- `token_url = []`
+- `project_name` and `project_url` may be `[]`
+- `project_search_reason` must explain the final no-token decision: `full`/`light` search found no reliable token, or `skip_candidate` did not justify token search budget
+- for `skip_candidate` rows, `project_search_reason` should be derived from `classifier_results.csv` `classifier_reason`
+
+Multi-project or multi-token case:
+
+- still one company row
+- put all project names in `project_name` as a JSON list string
+- put all tickers in `token_ticker` as a JSON list string, for example `["ANGLE","EURA","USDA"]`
+- list-valued columns should align by index whenever possible
+
+CSV safety:
+
+- JSON list columns must be valid JSON after CSV parsing
+- free-text fields containing commas, quotes, or newlines must be CSV-quoted
+- malformed CSV rows must be repaired or rejected by validation before merging
+
+## 7. Evidence Contract
+
+Positive fungible token evidence requires at least one source that clearly maps:
+
+- company or owned project
+- to a crypto project
+- to a fungible token name and ticker
+
+Good evidence includes:
+
+- official source explicitly names the token/ticker
+- CoinGecko, CoinMarketCap, or similar token data page clearly maps to the company/project
+- project docs, whitepaper, explorer, governance docs, or foundation materials identify the token
+- reputable secondary sources corroborate the mapping when primary sources are incomplete
+
+Do not treat these as token evidence:
+
+- `crypto`, `blockchain`, `web3`, `DeFi`, or `exchange` keywords alone
+- source `Verticals`, `Keywords`, `MatchedKeywords`, or `MatchedColumns` alone
+- stock `Exchange` or stock `Ticker`
+- relation-derived text about similar or competitor companies
+- NFT collection symbols unless they are also fungible token tickers
+- token-like strings that do not map back to the company/project
+
+When sources conflict:
+
+- prefer official and primary sources
+- otherwise set `needs_manual_review = yes`
+- do not invent a ticker to resolve conflict
+
+When no reliable source confirms a fungible token:
+
+- use `token_ticker = []`
+- do not output `no`
+- do not output `unknown`
+
+## 8. Manual Review Rules
+
+Set `needs_manual_review = yes` when any of these are true:
+
+- classifier decision is uncertain but project search was skipped
+- company-to-project mapping is ambiguous
+- token page exists but does not clearly map back to the company
+- sources disagree
+- official site is unavailable, dead, or too thin to confirm mapping
+- company has multiple brands, former names, subsidiaries, or project names that could change the mapping
+- company appears NFT-only or gaming-related but may also have a fungible token
+- evidence depends on a weak similarity between company name and token/project name
+- worker is not confident enough to mark the row high-confidence
+- CSV row required repair during collection
+
+Manual review rows are not failures. They are the audit queue:
+
+- `agent_runs/crypto_company/needs_manual_review.csv`
+
+## 9. Round-End Verification Subagent
+
+Every round must end with a fresh verification subagent. This is mandatory, not optional.
+
+Fresh verifier rule:
+
+- Spawn a new verifier subagent for each round.
+- Do not reuse the project/token search worker as its own verifier.
+- Do not reuse a verifier from a previous round.
+- The verifier must read this `Plan.md` before checking results.
+- The verifier must receive the round input tasks, worker `results.csv`, and any available evidence URLs.
+
+Verifier scope:
+
+- Re-check whether each company has zero, one, or multiple fungible token tickers.
+- Detect missing tickers in `token_ticker`.
+- Detect extra or over-reported tickers in `token_ticker`.
+- Detect wrong company-to-project mapping.
+- Detect cases where an NFT collection symbol, stock ticker, chain name, or product code was wrongly reported as a fungible token ticker.
+- Detect skipped-search rows where project/token search should have been required.
+- Detect rows where multiple projects or multiple token tickers should have been represented as a JSON list.
+
+Verifier search policy:
+
+- The verifier may search freely.
+- The verifier should use independent search queries, not only the worker's evidence URLs.
+- The verifier should focus on disagreement, omissions, and over-reporting rather than rewriting every row from scratch.
+- The verifier should prioritize rows with token-positive output, skipped project search, low or medium confidence, ambiguous brands, and multiple-token signals.
+
+Verifier output:
+
+- `verification_report.csv`
+- `verification_summary.md`
+
+Store verifier outputs in the current round run directory. If temporary run directories are deleted after merge, preserve the verifier summary or copy verifier reports into the final audit location before deletion.
+
+`verification_report.csv` should include:
+
+```csv
+task_index,company_id,company_name,worker_token_ticker,verifier_token_ticker,verdict,error_type,error_reason,evidence_urls,recommended_action
+```
+
+Allowed `verdict` values:
+
+- `pass`
+- `suspected_missing_token`
+- `suspected_extra_token`
+- `wrong_project_mapping`
+- `non_fungible_or_stock_ticker`
+- `search_should_not_have_been_skipped`
+- `insufficient_evidence`
+
+Allowed `recommended_action` values:
+
+- `accept_worker_row`
+- `edit_row`
+- `mark_manual_review`
+- `rerun_company`
+- `rerun_batch`
+- `update_prompt_or_process`
+
+Main agent responsibilities after verifier report:
+
+- Review every non-`pass` verifier row before the round is considered complete.
+- If the verifier finds a clear worker error, update the row or rerun the company/batch before merging.
+- If the verifier finds uncertainty but not a clear correction, set `needs_manual_review = yes`.
+- If the verifier identifies a systematic cause, update the operation flow before the next round.
+- Report the detected cause back to the main agent context, including whether it came from classification, search, evidence interpretation, CSV formatting, or prompt ambiguity.
+
+Systematic causes that require operation-flow updates:
+
+- classifier skips relevant project companies
+- workers miss obvious multiple-token projects
+- workers confuse stock tickers with token tickers
+- workers report NFT-only symbols as fungible tokens
+- workers over-trust weak secondary sources
+- workers fail to use company aliases, former names, or official domains for disambiguation
+- CSV list formatting causes token loss or merge errors
+
+Round completion gate:
+
+- A round is not complete until `verification_report.csv` and `verification_summary.md` exist.
+- A round is not complete until every verifier non-`pass` row has a recorded action.
+- Do not update `checkpoint.json` past the round until verifier issues are resolved or explicitly moved to `needs_manual_review.csv`.
+- Do not delete temporary worker run directories until verification is complete.
+
+## 10. Checkpoint and Resume Contract
+
+The only resume authority is:
+
+- `agent_runs/crypto_company/checkpoint.json`
+
+Required checkpoint fields:
+
+- `completed_rows_in_final_results`
+- `completed_through_task_index`
+- `completed_through_batch`
+- `next_batch_to_process`
+- `next_task_index_to_process`
+- `batch_size`
+- `workers`
+- `total_batches`
+- `classifier_results_csv`
+- `final_results_csv`
+- `manual_review_csv`
+
+Resume rule:
+
+- start from `next_batch_to_process`
+- never rerun batches already merged into final results unless explicitly requested
+- if a temporary worker run exists but is not merged, validate it before deciding whether to merge or discard
+
+After merging a run:
+
+- update checkpoint
+- regenerate `needs_manual_review.csv`
+- preserve or summarize verifier reports for audit
+- delete temporary worker run directories unless the user asks to keep them for audit
+
+## 11. Validation Gates
+
+Validation must happen before rows are merged into final results.
+
+Structural checks:
+
+- classifier results CSV header exactly matches the classifier/router schema
+- classifier results row count equals expected task count for the completed range
+- every classifier result has one allowed `search_tier`
+- classifier `risk_flags` parses as a JSON list string
+- classifier `project_search_required` matches `search_tier`: `yes` for `full` or `light`, `no` for `skip_candidate`
+- CSV header exactly matches the v2 schema
+- row count equals expected task count
+- no duplicate `task_index`
+- task indexes are continuous for the completed range
+- every list-valued column parses as JSON list
+- `status = completed`
+- `company_type` uses the allowed values
+- `crypto_project_likelihood` uses the allowed values
+- `project_search_required` in `yes|no`
+- `confidence` in `high|medium|low`
+- `needs_manual_review` in `yes|no`
+
+Evidence checks:
+
+- if `token_ticker != []`, then `token_url` or `evidence_urls` must be non-empty
+- `evidence_source_types` must identify the source categories used
+- token-positive rows must have evidence that maps company/project to token
+- stock ticker must not be used as crypto token evidence
+- list-valued token fields should align by index where possible
+- `project_search_required = no` rows must have a non-empty `project_search_reason`
+
+Classifier checks:
+
+- all companies have classifier fields populated
+- every worker row has a matching `classifier_results.csv` row
+- worker `company_type`, `crypto_project_likelihood`, and `project_search_required` must match the classifier/router result unless the row records an explicit reroute reason
+- `search_tier = skip_candidate` rows are sampled more heavily because they are search-budget skipping decisions
+- `skip_candidate` rows with `crypto_project_likelihood` of `medium`, `high`, or `unclear` are invalid and must be rerouted to `full` or `light`
+- low-confidence skipped rows must be marked `needs_manual_review = yes`
+
+Verifier checks:
+
+- each round has a fresh `verification_report.csv`
+- each round has a `verification_summary.md`
+- every non-`pass` verifier row has a recorded action
+- missing-token and extra-token findings are resolved before checkpoint update
+- verifier-identified systematic causes are reported back to the main agent context
+
+Checkpoint checks:
+
+- final row count equals `completed_rows_in_final_results`
+- max task index equals `completed_through_task_index`
+- `next_task_index_to_process = completed_through_task_index + 1`
+- `next_batch_to_process = completed_through_batch + 1`
+
+Quality checks:
+
+- all `needs_manual_review = yes` rows go to `needs_manual_review.csv`
+- sample token-positive rows
+- sample `token_ticker = []` rows
+- review all rows where company name and project/token name differ materially
+- review all rows where project search was skipped
+- review all verifier non-`pass` rows
+
+## 12. Accuracy Review After a Run
+
+After each round, before checkpoint update or round closure:
+
+1. Run collector validation.
+2. Confirm `classifier_results.csv` exists and covers every task in the round.
+3. Confirm classifier `search_tier` and `project_search_required` values are consistent.
+4. Confirm JSON list parse failures are zero.
+5. Confirm row count increased by expected count.
+6. Confirm no duplicate task indexes.
+7. Spawn a fresh verifier subagent for the round.
+8. Verify missing, extra, and wrongly mapped `token_ticker` values.
+9. Resolve every verifier non-`pass` row by editing, rerunning, or marking manual review.
+10. Inspect all `needs_manual_review = yes` rows.
+11. Spot-check a sample of token-positive rows.
+12. Spot-check a sample of `token_ticker = []` rows.
+13. Spot-check skipped-search rows.
+14. Update checkpoint only after verification is complete.
+15. Remove temporary run directories only after verification is complete.
+
+Suggested sample checks:
+
+- 100% of manual review rows
+- 10% of token-positive rows per block
+- 5% of `project_search_required = no` rows per block
+- 2% of `token_ticker = []` rows per block
+- all rows with multiple token tickers
+- all rows where `confidence = high` but evidence is only secondary sources
+- 100% of verifier non-`pass` rows
+
+## 13. Failure Handling
+
+If worker output is malformed:
+
+- do not merge directly
+- try deterministic CSV repair only for known quoting issues
+- if repair changes column positions, keep `needs_manual_review = yes`
+- if repair is unsafe, rerun the batch
+
+If a worker writes fewer or more rows than expected:
+
+- do not merge
+- inspect the worker result
+- rerun the batch if necessary
+
+If a batch was partially completed:
+
+- keep temporary run directory
+- do not update final checkpoint past that batch
+- resume from the same batch after repair
+
+If the classifier/router assigns too many companies to `skip_candidate`:
+
+- audit `skip_candidate` rows by company type and risk flags
+- lower the `skip_candidate` threshold
+- reroute affected batches to `light` or `full`
+- rerun affected batches with `project_search_required = yes`
+
+If the verifier finds missing or extra token tickers:
+
+- do not merge the affected rows as-is
+- identify whether the root cause is classifier/router tiering, search miss, source ambiguity, evidence misread, or CSV formatting
+- edit the affected row only when the correction is clearly supported
+- otherwise mark `needs_manual_review = yes` or rerun the company/batch
+- update prompt, worker instruction, classifier/router threshold, or validation rule when the same error pattern can recur
+
+## 14. Current Operating State
+
+As of the latest completed run:
+
+- classifier result path: `part5_analyse_company_to_token/agent_runs/crypto_company/classifier_results.csv`
+- final result path: `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`
+- manual review path: `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`
+- checkpoint path: `part5_analyse_company_to_token/agent_runs/crypto_company/checkpoint.json`
+- resume from the batch recorded in `checkpoint.json`
+
+Do not infer current progress from temporary worker folders. Temporary folders may be deleted after merge.
+
+Existing pre-v2 results should be treated as legacy output. Before running new batches under this plan, update `agent_prompt_template.md`, worker instructions, and collector validation to the v2 schema.

@@ -1,218 +1,254 @@
 # Part5 Agent Prompt Template
 
-本文件是 part5 的顯式 agent prompt 模版。
+本文件是 part5 的 agent prompt 模版。每次 part5 skill 或 worker 運行前，必須先讀：
 
-適用範圍：
+1. `part5_analyse_company_to_token/Plan.md`
+2. 本文件
 
-- `crypto_company.csv` 中的 company review
-- 本輪最小可行任務只聚焦：
-  - company 對應到哪些 crypto project
-  - `token_ticker`
-  - token evidence
+若本文件與 `Plan.md` 衝突，以 `Plan.md` 為準。
 
-## System / Task Prompt
+## Scope
 
-你正在審查一家公司是否有對應的 crypto project，以及這些 project 是否有 token ticker。最終輸出不再單獨提供 `has_token` 欄位；若找到 token，將 ticker 寫入 `token_ticker` 的 JSON list，若沒有足夠證據則 `token_ticker` 寫成空 list：`[]`。
+任務目標：
 
-一家公司可能：
+- 先判斷公司類型與 crypto project 可能性。
+- 將 classifier/router 決策寫入 `classifier_results.csv`。
+- 只關注 fungible token project。
+- 根據 `search_tier` 決定 full / light / skip_candidate 搜索深度。
+- 找出公司對應的 zero / one / many crypto projects。
+- 找出所有可靠映射到該公司或其 owned project 的 fungible token tickers。
+- 每家公司固定輸出一行 CSV。
 
-- 沒有任何 token
-- 對應一個 crypto project，且有一個 token
-- 對應多個 crypto project，且有多個 token ticker
+不做：
 
-若一家公司對應多個 project / token，仍然只輸出一行，並在 `token_ticker` 中用 JSON list 記錄所有 token ticker。
-
-你只能查看以下 3 類來源：
-
-1. 官方網站
-2. CoinGecko
-3. CoinMarketCap
-
-禁止擴散到其他來源，包括但不限於：
-
-- DefiLlama
-- GeckoTerminal
-- DexScreener
-- 新聞網站
-- 第三方媒體
-- 論壇
-- 社群媒體
-- 其他聚合站
-
-你必須優先查看官方網站；只有官方站不足時，才查看 CoinGecko 和 CoinMarketCap。
-
-## Input Fields
-
-你會收到以下上下文字段：
-
-- `CompanyID`
-- `CompanyName`
-- `CompanyAlsoKnownAs`
-- `CompanyFormerName`
-- `CompanyLegalName`
-- `Website`
-- `normalized_domain`
-- `ParentCompany`
-- `Exchange`
-- `Ticker`
-- `HQLocation`
-- `HQCountry`
-- `Verticals`
-- `EmergingSpaces`
-- `Description`
-- `Keywords`
-- `MatchedKeywords`
-- `MatchedColumns`
-
-這些字段只用於：
-
-- 品牌 disambiguation
-- 官方域名定位
-- project alias / former name matching
-- 幫助你找到可能的 project 名稱
-- 避免把上市公司股票 ticker 誤判為 crypto token ticker
-
-不能只因為這些字段提到 `crypto` / `blockchain` / `exchange`，就直接判定有 token。
-
-## Input Field Policy
-
-為了最快而準，輸入應保持短而有辨識力。
-
-必須保留：
-
-- `task_index`
-- `CompanyID`
-- `CompanyName`
-- `CompanyAlsoKnownAs`
-- `CompanyFormerName`
-- `CompanyLegalName`
-- `Website`
-- `normalized_domain`
-- `ParentCompany`
-- `Exchange`
-- `Ticker`
-- `Verticals`
-- `EmergingSpaces`
-- `Description`
-- `Keywords`
-- `MatchedKeywords`
-- `MatchedColumns`
-
-可選保留：
-
-- `HQLocation`
-- `HQCountry`
-
-通常不要傳給 agent：
-
-- financing / valuation / revenue / investor 欄位
-- address / phone / email 欄位
-- Facebook / Twitter / LinkedIn 欄位
-- PitchBook profile metadata
-- `Relation_SimilarDescriptions`
-- `Relation_CompetitorDescriptions`
-
-長文本限制：
-
-- `Description` 最多保留 700 字符
-- `Keywords` 最多保留 300 字符
-- `MatchedKeywords` / `MatchedColumns` 只用作弱提示，不能作為 token 證據
-- 不要把 relation descriptions 整段塞進 prompt；它們容易引入非本公司的 project / token
+- NFT collection mapping，除非同時存在 fungible token。
+- listing venue / listing date 深搜。
+- 投資分析、估值分析、市場表現分析。
+- 只因公司與 crypto 相關就推斷其有 token。
 
 ## Required Workflow
 
-按以下順序執行：
+按以下順序執行，不要跳步：
 
-1. 先用 `Website` 或 `normalized_domain` 確認官方站
-2. 用 `CompanyName`、alias、former name、legal name 在官方站內確認可能的 project 名稱
-3. 在官方站內查是否明確提到 token / coin / ticker / native token
-4. 若官方站沒有明確 token 證據，再查 CoinGecko
-5. 若 CoinGecko 沒有足夠證據，再查 CoinMarketCap
-6. 若三類來源都不足，輸出一行且 `token_ticker` 寫成空 list：`[]`
-7. 若確認多個 project 或多個 token，仍輸出一行，相關欄位用 JSON list 記錄
+1. 讀 `Plan.md`，以其中的 schema、classifier、verification、model policy 為準。
+2. 讀公司 row，理解為什麼它出現在 `crypto_company.csv`。
+3. 先做 company relevance classifier/router。
+4. 填寫 `company_type`、`crypto_project_likelihood`、`search_tier`、`project_search_required`、`risk_flags`、`classifier_reason`。
+5. 將 classifier/router 決策寫入 `classifier_results.csv`。
+6. 如果 `search_tier = skip_candidate`，不要做 full/light search，直接輸出一行，`token_ticker = []`。
+7. 如果 `search_tier = light`，做 bounded lightweight token-existence check。
+8. 如果 `search_tier = full`，自由搜索資料，查找 company -> project -> fungible token ticker mapping。
+9. 找到多個 project 或多個 token 時，仍輸出一行，用 JSON list 記錄。
+10. 若沒有可靠證據確認 fungible token，`token_ticker = []`，不要輸出 `no` 或 `unknown`。
+11. 若資料衝突、品牌映射不穩、或不確定是否漏報/多報，設 `needs_manual_review = yes`。
 
-## Decision Rules
+## Stage 1: Classifier Rules
 
-### 找到 project-token mapping
+Classifier/router 需要回答：
 
-只有以下情況才能填寫 `token_ticker`：
+- 這是什麼類型的公司？
+- 它為什麼被 crypto / blockchain dataset 抽中？
+- 它是否可能有 owned crypto project？
+- 它應該使用哪個 search tier？
 
-- 官方網站明確提到 token / coin / ticker
-- 或 CoinGecko 有明確對應 token 頁
-- 或 CoinMarketCap 有明確對應 token 頁
-- 且該 token 頁或官方站能合理映射回這家公司、公司 alias、former name、legal name、parent/subsidiary/project name
+`classifier_results.csv` 欄位必須是：
 
-### 沒有找到 token ticker
+```csv
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,search_tier,project_search_required,risk_flags,classifier_reason
+```
 
-以下情況一律讓 `token_ticker` 寫成空 list：`[]`：
+`company_type` 只能使用以下值：
 
-- 官方網站明確聲明沒有 native token
-- 官方 docs / FAQ 明確排除 token 設計
-- 只有公司是 crypto / exchange，但沒有 token 證據
-- 三類允許來源都查過，但沒有正證據，也沒有官方否定證據
-- 項目可能存在，但來源映射不穩或品牌混淆
-- 查不到或不確定時，不能臆測 ticker
+- `protocol_or_network`
+- `dapp_or_product`
+- `exchange_or_broker`
+- `wallet_or_custody`
+- `mining_or_validator`
+- `infrastructure_or_data`
+- `security_or_compliance`
+- `service_provider`
+- `investment_or_holdings`
+- `media_or_education`
+- `gaming_or_nft`
+- `traditional_business`
+- `unclear`
 
-## `TokenTicker` Rules
+`crypto_project_likelihood` 只能使用：
 
-- `token_ticker` 必須來自官方網站、CoinGecko 或 CoinMarketCap
-- 若沒有找到，或證據不足，`token_ticker` 寫成空 list：`[]`
-- 若來源互相衝突，優先官方網站；否則 `token_ticker` 寫成空 list 並 `needs_manual_review = yes`
-- 若同一家公司確認對應多個 token ticker，`token_ticker` 寫成 JSON list，例如 `["ABC","XYZ"]`
-- 不要把 `Exchange` / `Ticker` 裡的上市股票 ticker 當成 crypto token ticker
+- `high`
+- `medium`
+- `low`
+- `none`
+- `unclear`
 
-## Listing Scope
+`project_search_required` 只能使用：
 
-本輪不要主動深查：
+- `yes`
+- `no`
 
-- `ListedWhere`
-- `ListedWhen`
-- 交易所上幣時間
+`search_tier` 只能使用：
 
-只有在官方網站、CoinGecko 或 CoinMarketCap 頁面本身已清楚給出時，才可順手補充；否則留空。
+- `full`
+- `light`
+- `skip_candidate`
+
+設 `search_tier = full` 的情況：
+
+- 公司經營 protocol、network、dapp、exchange、wallet、tokenized product 或 blockchain-native product。
+- row 中提到 project、token、whitepaper、docs、protocol、chain、app、DAO、ecosystem。
+- 公司名稱、alias、former name、legal name 或 website 暗示 project identity 可能不同於公司法定名稱。
+- 你無法高置信度排除 project/token 可能性。
+
+設 `search_tier = light` 的情況：
+
+- 公司 crypto-adjacent 或低可能性，但仍有 enough signal 做 cheap token-existence check。
+- service provider、infrastructure、media、mining、validator、custody、analytics、security、compliance、NFT、gaming、investment 類公司有一些 crypto/project context。
+- 官方 domain、alias、former name 或 description 有 token/project-like terms，但不足以 justify full search。
+- source context 薄、模糊、可能過時。
+
+只有在明顯不相關時才設 `search_tier = skip_candidate`，例如：
+
+- 傳統公司，只因弱 crypto keyword 被抽中。
+- consulting、legal、accounting、recruitment、marketing、event、generic service provider，且沒有 owned project signal。
+- investor、holding company、VC、accelerator，且沒有 owned crypto project signal。
+- media、education、research company，且沒有 owned crypto project signal。
+- mining、validator、custody、analytics、security、compliance company，且沒有 owned token/project signal。
+- NFT-only / collectible-only / gaming asset company，且沒有 fungible token signal。
+
+`project_search_required = yes` 用於 `full` 或 `light`。
+
+`project_search_required = no` 只用於 `skip_candidate`。
+
+`risk_flags` 必須是 JSON list string，例如 `["alias_or_former_name","token_keyword"]`。沒有 risk flag 時寫 `[]`。
+
+保守規則：
+
+- 不確定時，設 `search_tier = full`。
+- token budget 有壓力但不能排除 project/token relevance 時，用 `light`，不要用 `skip_candidate`。
+- `skip_candidate` 必須能用 `classifier_reason` 清楚解釋。
+
+## Stage 2: Search Rules
+
+若 `search_tier = full`：
+
+- 可以自由搜索資料。
+- 不限制為官網、CoinGecko、CoinMarketCap。
+- 優先使用 primary sources，但可用可靠 secondary sources 做 discovery / corroboration。
+- 搜索深度應按公司 ambiguity 和 project likelihood 調整。
+
+若 `search_tier = light`：
+
+- 保持 token usage 低。
+- 先用 exact company name、alias、former name、normalized_domain。
+- 優先官方 domain 和 exact-match major token data pages。
+- 如果發現 plausible token / project signal，升級為 full search；若 round budget 不支持 full rerun，設 `needs_manual_review = yes`。
+
+若 `search_tier = skip_candidate`：
+
+- 不做 full/light search。
+- 結果 row 的 `project_search_reason` 應來自 `classifier_reason`。
+
+推薦來源順序：
+
+1. 官方網站、docs、whitepaper、litepaper、blog、FAQ、governance forum、announcement。
+2. CoinGecko、CoinMarketCap 或類似 token data pages。
+3. Project docs、GitHub、explorer、exchange pages、audit docs、foundation pages。
+4. 用可靠 secondary sources 幫助 disambiguation。
+
+不能單獨作為 token evidence：
+
+- 搜索結果 snippet。
+- 沒有強證據補充的社交媒體貼文。
+- 無 company/project mapping 的 token list。
+- stock `Exchange` / `Ticker`。
+- NFT collection symbol，除非它也是 fungible token ticker。
+- 看起來像 ticker 但不能映射回該公司或 owned project 的字符串。
+
+## Input Fields
+
+你會收到以下字段：
+
+- `task_index`
+- `CompanyID`
+- `CompanyName`
+- `CompanyAlsoKnownAs`
+- `CompanyFormerName`
+- `CompanyLegalName`
+- `Website`
+- `normalized_domain`
+- `ParentCompany`
+- `Exchange`
+- `Ticker`
+- `HQLocation`
+- `HQCountry`
+- `Verticals`
+- `EmergingSpaces`
+- `Description`
+- `Keywords`
+- `MatchedKeywords`
+- `MatchedColumns`
+- `CryptoRelevanceContext`
+- `SearchPolicy`
+- `AgentTaskScope`
+
+字段用途：
+
+- company / brand / project disambiguation。
+- 判斷公司類型與 project likelihood。
+- 理解 row 為什麼被 crypto candidate pipeline 抽中。
+- 找到官方 domain、project name、whitepaper、docs 或 token evidence。
+- 避免把上市公司股票 ticker 誤判成 crypto token ticker。
+
+不能只因為 `Verticals`、`Keywords`、`MatchedKeywords`、`MatchedColumns` 提到 crypto/blockchain/exchange，就直接填 token。
 
 ## Required Output Format
 
-請輸出 CSV 檔案格式。每家公司固定輸出一行。若只處理一家公司，輸出 header 加一行資料；若處理多家公司，輸出一個 header，然後每家公司一行。
+輸出必須是 CSV。若只處理一家公司，輸出 header 加一行資料；若處理多家公司，輸出一個 header，然後每家公司一行。
 
-CSV 欄位必須按以下順序輸出：
+CSV 欄位必須按以下 v2 schema 順序輸出：
 
-- `task_index`
-- `company_id`
-- `company_name`
-- `normalized_domain`
-- `project_name`
-- `project_url`
-- `status`
-- `completed_at`
-- `token_ticker`
-- `token_name`
-- `token_url`
-- `has_token_evidence`
-- `evidence_urls`
-- `evidence_source_types`
-- `confidence`
-- `needs_manual_review`
+```csv
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_ticker,token_name,token_url,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+```
 
 字段規則：
 
-- 不要輸出 `CompanyID`
-- 不要輸出 `CompanyName`
-- 不要輸出 `has_token`
-- 不要輸出 `raw_output`
-- 若沒有 token，仍輸出一行；`token_ticker` / `token_name` / `token_url` 寫成空 list：`[]`
-- 若有多個 project 或多個 token，不要輸出多行；用 JSON list 放進同一欄
-- `project_name`: JSON list。官方站、CoinGecko 或 CoinMarketCap 可確認的 project 名稱；沒有則 `[]`
-- `project_url`: JSON list。project 官方頁或最直接的官方 project URL；沒有則 `[]`
-- `token_ticker`: JSON list。找到 ticker 時填所有 ticker，例如 `["ABC","XYZ"]`；沒有則 `[]`
-- `token_name`: JSON list。token 全名；沒有則 `[]`
-- `token_url`: JSON list。CoinGecko / CoinMarketCap token 頁或官方 token 頁；沒有則 `[]`
-- `has_token_evidence`: 簡短描述你依據的證據
-- `evidence_urls`: 多個 URL 用 `|` 分隔
-- `evidence_source_types`: 多個來源類型用 `|` 分隔，值只允許 `official_site`、`coingecko`、`coinmarketcap`
-- `confidence`: `high` / `medium` / `low`
-- `needs_manual_review`: `yes` / `no`
-- CSV 欄位值若包含逗號、換行或雙引號，必須按標準 CSV 規則加雙引號並轉義
+- `company_type`: 必須使用 classifier allowed values。
+- `crypto_project_likelihood`: `high` / `medium` / `low` / `none` / `unclear`。
+- `project_search_required`: 必須與 classifier/router 結果一致，`full` / `light` 為 `yes`，`skip_candidate` 為 `no`。
+- `project_search_reason`: 簡短說明 full/light search 結論，或 skip_candidate 的 final no-token 理由。
+- `project_name`: JSON list string；沒有則 `[]`。
+- `project_url`: JSON list string；沒有則 `[]`。
+- `status`: 固定 `completed`。
+- `completed_at`: ISO timestamp；不知道可留空。
+- `token_ticker`: JSON list string；找到所有可靠 fungible tickers；沒有則 `[]`。
+- `token_name`: JSON list string；沒有則 `[]`。
+- `token_url`: JSON list string；沒有則 `[]`。
+- `has_token_evidence`: 簡短證據摘要。
+- `evidence_urls`: 多個 URL 用 `|` 分隔。
+- `evidence_source_types`: 多個來源類型用 `|` 分隔，例如 `official_site|coingecko|coinmarketcap|whitepaper|docs|explorer|exchange|secondary_source`。
+- `confidence`: `high` / `medium` / `low`。
+- `needs_manual_review`: `yes` / `no`。
+
+CSV 安全規則：
+
+- JSON list 欄位必須是合法 JSON list。
+- 欄位含逗號、換行或雙引號時，必須按標準 CSV 規則加雙引號並轉義。
+- 不要輸出 `CompanyID`、`CompanyName`、`has_token`、`raw_output` 這些舊欄位。
+- 不要輸出 Markdown，不要輸出解釋段落，只輸出 CSV。
+
+## Manual Review Rules
+
+以下情況設 `needs_manual_review = yes`：
+
+- classifier 不確定但仍跳過 project search。
+- company-to-project mapping 模糊。
+- token page 存在，但不能清楚映射回公司或 owned project。
+- sources disagree。
+- official site dead / unavailable / too thin。
+- 公司有多品牌、former name、subsidiary、foundation、DAO，可能影響 mapping。
+- NFT-only 或 gaming 相關，但可能同時存在 fungible token。
+- worker 不能高置信度判斷是否漏報或多報 token。
 
 ## Input Template
 
@@ -236,11 +272,70 @@ Description: {Description}
 Keywords: {Keywords}
 MatchedKeywords: {MatchedKeywords}
 MatchedColumns: {MatchedColumns}
+CryptoRelevanceContext: {CryptoRelevanceContext}
+SearchPolicy: {SearchPolicy}
+AgentTaskScope: {AgentTaskScope}
 ```
 
 ## Output Template
 
 ```csv
-task_index,company_id,company_name,normalized_domain,project_name,project_url,status,completed_at,token_ticker,token_name,token_url,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
-{task_index},{CompanyID},{CompanyName},{normalized_domain},"[""Example Protocol""]","[""https://example.com""]",completed,{completed_at},"[""TOKEN""]","[""Example Token""]","[""https://www.coingecko.com/en/coins/example""]","short evidence","https://example.com/|https://www.coingecko.com/en/coins/example","official_site|coingecko",high,no
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_ticker,token_name,token_url,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+{task_index},{CompanyID},{CompanyName},{normalized_domain},protocol_or_network,high,yes,"company appears to operate a protocol or blockchain-native product","[""Example Protocol""]","[""https://example.com""]",completed,{completed_at},"[""TOKEN""]","[""Example Token""]","[""https://www.coingecko.com/en/coins/example""]","official docs and token data page map the project to TOKEN","https://example.com/|https://www.coingecko.com/en/coins/example","official_site|coingecko",high,no
 ```
+
+## Round-End Verifier Prompt
+
+每個 round 結束前，主 agent 必須重新 spawn verifier subagent。verifier 不要重用原 worker。
+
+Verifier 需要讀：
+
+- `part5_analyse_company_to_token/Plan.md`
+- 本輪 input tasks
+- 本輪 worker `results.csv`
+- worker evidence URLs
+
+Verifier 任務：
+
+- 重新檢查每家公司 `token_ticker` list 是否漏報。
+- 重新檢查是否多報、不相關 ticker、stock ticker、NFT-only symbol、chain name、product code。
+- 檢查 `project_search_required = no` 的 row 是否真的應該跳過深搜。
+- 檢查多 project / 多 token 是否正確放在同一行 JSON list。
+- 發現錯誤時，指出原因與建議動作。
+
+Verifier 輸出 `verification_report.csv`：
+
+```csv
+task_index,company_id,company_name,worker_token_ticker,verifier_token_ticker,verdict,error_type,error_reason,evidence_urls,recommended_action
+```
+
+允許 `verdict`：
+
+- `pass`
+- `suspected_missing_token`
+- `suspected_extra_token`
+- `wrong_project_mapping`
+- `non_fungible_or_stock_ticker`
+- `search_should_not_have_been_skipped`
+- `insufficient_evidence`
+
+允許 `recommended_action`：
+
+- `accept_worker_row`
+- `edit_row`
+- `mark_manual_review`
+- `rerun_company`
+- `rerun_batch`
+- `update_prompt_or_process`
+
+Verifier 同時輸出 `verification_summary.md`，說明：
+
+- checked row count
+- pass count
+- non-pass count
+- suspected missing token count
+- suspected extra token count
+- wrong mapping count
+- skipped-search concern count
+- systematic causes found
+- recommended process updates

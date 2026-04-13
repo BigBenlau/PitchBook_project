@@ -1,23 +1,17 @@
 {
-  "updated_at": "2026-04-11T12:39:07+00:00",
+  "updated_at": "2026-04-13T12:53:21.666976+00:00",
+  "schema_version": "v2",
+  "completed_rows_in_final_results": 30,
+  "completed_through_task_index": 30,
+  "completed_through_batch": 1,
+  "next_batch_to_process": 2,
+  "next_task_index_to_process": 31,
   "batch_size": 30,
   "workers": 5,
   "total_batches": 595,
-  "completed_rows_in_final_results": 990,
-  "completed_through_task_index": 990,
-  "completed_through_batch": 33,
-  "next_batch_to_process": 34,
-  "next_task_index_to_process": 991,
-  "next_recommended_run": {
-    "start_batch": 34,
-    "limit_batches": 15,
-    "workers": 5,
-    "planned_end_batch": 48
-  },
-  "final_results_csv": "part5_analyse_company_to_token/agent_runs/crypto_company/results.csv",
-  "manual_review_csv": "part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv",
-  "manual_review_rows": 124,
-  "token_ticker_non_empty_rows": 279,
-  "bad_token_ticker_json_rows": 0,
-  "status": "ready_for_batch_0034"
+  "classifier_results_csv": "/Users/benlao/Downloads/STANFORD_20260201/part5_analyse_company_to_token/agent_runs/crypto_company/classifier_results.csv",
+  "final_results_csv": "/Users/benlao/Downloads/STANFORD_20260201/part5_analyse_company_to_token/agent_runs/crypto_company/results.csv",
+  "manual_review_csv": "/Users/benlao/Downloads/STANFORD_20260201/part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv",
+  "verification_findings_csv": "/Users/benlao/Downloads/STANFORD_20260201/part5_analyse_company_to_token/agent_runs/crypto_company/verification_findings.csv",
+  "status": "ready_for_batch_0002"
 }

@@ -14,11 +14,11 @@ PART5_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART5_DIR.parent
 
 DEFAULT_INPUT_CSV = REPO_ROOT / "part2_build_crypto_candidate" / "output" / "crypto_company.csv"
-DEFAULT_TEMPLATE = REPO_ROOT / "skills" / "crypto-token-review" / "references" / "agent_task_prompt.md"
+DEFAULT_TEMPLATE = PART5_DIR / "agent_prompt_template.md"
 DEFAULT_OUTPUT_DIR = PART5_DIR / "agent_task_batches" / "crypto_company"
 DEFAULT_BATCH_SIZE = 30
-DEFAULT_ALLOWED_SOURCES = "official_site|coingecko|coinmarketcap"
-DEFAULT_TASK_SCOPE = "project_token_mapping|token_ticker"
+DEFAULT_SEARCH_POLICY = "free_search_with_primary_source_priority"
+DEFAULT_TASK_SCOPE = "company_relevance_classification|project_token_mapping|fungible_token_ticker"
 
 INPUT_COLUMNS = [
     "task_index",
@@ -40,8 +40,9 @@ INPUT_COLUMNS = [
     "Keywords",
     "MatchedKeywords",
     "MatchedColumns",
-    "allowed_sources",
-    "agent_task_scope",
+    "CryptoRelevanceContext",
+    "SearchPolicy",
+    "AgentTaskScope",
 ]
 
 PROMPT_PLACEHOLDERS = [
@@ -65,8 +66,9 @@ PROMPT_PLACEHOLDERS = [
     "Keywords",
     "MatchedKeywords",
     "MatchedColumns",
-    "allowed_sources",
-    "agent_task_scope",
+    "CryptoRelevanceContext",
+    "SearchPolicy",
+    "AgentTaskScope",
     "completed_at",
 ]
 
@@ -88,7 +90,7 @@ def parse_args() -> argparse.Namespace:
         "--template",
         type=Path,
         default=DEFAULT_TEMPLATE,
-        help="Prompt template. Defaults to skills/crypto-token-review/references/agent_task_prompt.md.",
+        help="Prompt template. Defaults to part5_analyse_company_to_token/agent_prompt_template.md.",
     )
     parser.add_argument(
         "--output-dir",
@@ -131,6 +133,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=300,
         help="Maximum characters retained from Keywords.",
+    )
+    parser.add_argument(
+        "--context-max-chars",
+        type=int,
+        default=300,
+        help="Maximum characters retained from crypto relevance context.",
     )
     return parser.parse_args()
 
@@ -182,6 +190,21 @@ def derive_normalized_domain(website: str, normalized_domain: str = "") -> str:
     return host
 
 
+def build_crypto_relevance_context(source_row: dict[str, str], max_chars: int) -> str:
+    parts: list[str] = []
+    for label, column in [
+        ("Relation_Verticals", "Relation_Verticals"),
+        ("Relation_SimilarVerticals", "Relation_SimilarVerticals"),
+        ("Relation_CompetitorVerticals", "Relation_CompetitorVerticals"),
+        ("MatchedKeywords", "MatchedKeywords"),
+        ("MatchedColumns", "MatchedColumns"),
+    ]:
+        value = normalize_text(source_row.get(column, ""))
+        if value:
+            parts.append(f"{label}: {value}")
+    return limit_text(" | ".join(parts), max_chars)
+
+
 def load_rows(input_csv: Path) -> list[dict[str, str]]:
     with input_csv.open("r", encoding="utf-8-sig", newline="") as infile:
         reader = csv.DictReader(infile)
@@ -206,6 +229,7 @@ def build_input_row(
     task_index: int,
     description_max_chars: int,
     keywords_max_chars: int,
+    context_max_chars: int,
 ) -> dict[str, str]:
     output = {
         "task_index": str(task_index),
@@ -230,8 +254,9 @@ def build_input_row(
         "Keywords": limit_text(source_row.get("Keywords", ""), keywords_max_chars),
         "MatchedKeywords": normalize_text(source_row.get("MatchedKeywords", "")),
         "MatchedColumns": normalize_text(source_row.get("MatchedColumns", "")),
-        "allowed_sources": DEFAULT_ALLOWED_SOURCES,
-        "agent_task_scope": DEFAULT_TASK_SCOPE,
+        "CryptoRelevanceContext": build_crypto_relevance_context(source_row, context_max_chars),
+        "SearchPolicy": DEFAULT_SEARCH_POLICY,
+        "AgentTaskScope": DEFAULT_TASK_SCOPE,
     }
     return {column: output.get(column, "") for column in INPUT_COLUMNS}
 
@@ -273,8 +298,8 @@ def write_manifest(path: Path, rows: list[dict[str, str]], batch_size: int) -> N
         "CompanyID",
         "CompanyName",
         "normalized_domain",
-        "allowed_sources",
-        "agent_task_scope",
+        "SearchPolicy",
+        "AgentTaskScope",
     ]
     with path.open("w", encoding="utf-8", newline="") as outfile:
         writer = csv.DictWriter(outfile, fieldnames=fieldnames)
@@ -289,8 +314,8 @@ def write_manifest(path: Path, rows: list[dict[str, str]], batch_size: int) -> N
                     "CompanyID": row["CompanyID"],
                     "CompanyName": row["CompanyName"],
                     "normalized_domain": row["normalized_domain"],
-                    "allowed_sources": row["allowed_sources"],
-                    "agent_task_scope": row["agent_task_scope"],
+                    "SearchPolicy": row["SearchPolicy"],
+                    "AgentTaskScope": row["AgentTaskScope"],
                 }
             )
 
@@ -315,8 +340,9 @@ def write_batches(
                     "company_id": row["CompanyID"],
                     "company_name": row["CompanyName"],
                     "normalized_domain": row["normalized_domain"],
-                    "allowed_sources": row["allowed_sources"],
-                    "agent_task_scope": row["agent_task_scope"],
+                    "search_policy": row["SearchPolicy"],
+                    "agent_task_scope": row["AgentTaskScope"],
+                    "plan": relative_path(PART5_DIR / "Plan.md"),
                     "prompt_template": relative_path(template_path),
                     "input_row": row,
                     "prompt": render_prompt(template, row),
@@ -352,6 +378,7 @@ def main() -> None:
             task_index=index,
             description_max_chars=args.description_max_chars,
             keywords_max_chars=args.keywords_max_chars,
+            context_max_chars=args.context_max_chars,
         )
         for index, row in enumerate(selected_rows, start=1)
     ]

@@ -1,0 +1,31 @@
+task_index,company_id,company_name,worker_token_ticker,verifier_token_ticker,verdict,error_type,error_reason,evidence_urls,recommended_action
+1,103700-62,Zebpay,[],[],pass,,,,accept_worker_row
+2,103725-10,Zikto,[],"[""ISR""]",suspected_missing_token,missing_fungible_token,"Official Zikto pages mention Insureum tokens in the blockchain insurance ecosystem, but the worker left token_ticker empty.",https://about.zikto.com/|https://coinmarketcap.com/currencies/insureum/,edit_row
+3,103822-74,Streembit,[],[],pass,,,,accept_worker_row
+4,103893-81,Zeconomy,"[""ZENO""]","[""ZENO""]",pass,,,,accept_worker_row
+5,103949-89,Coin Apex,[],[],pass,,,,accept_worker_row
+6,103969-34,Coinhako,[],[],pass,,,,accept_worker_row
+7,104046-10,Contrib,"[""CTB""]","[""CTB""]",pass,,,,accept_worker_row
+8,104354-21,Unbound Security (Network Management Software),[],[],pass,,,,accept_worker_row
+9,104387-40,Leondrino,[],"[""XLEO""]",suspected_missing_token,missing_fungible_token,"Leondrino's XLEO token site and official materials identify XLEO as the native fungible token, but the worker left token_ticker empty.",https://www.leondrino.com/|https://xleo.leondrino.com/,edit_row
+10,104406-18,Bed Bath & Beyond,[],[],pass,,,,accept_worker_row
+11,104430-14,Aurovine,"[""ADC""]","[""ADC""]",pass,,,,accept_worker_row
+12,104479-69,WikiRealty,[],[],pass,,,,accept_worker_row
+13,104518-76,Fidectus,[],[],pass,,,,accept_worker_row
+14,104539-87,Pluang,[],[],pass,,,,accept_worker_row
+15,104552-84,Kriptown,[],[],pass,,,,accept_worker_row
+16,104556-45,Gigantec Media,[],[],pass,,,,accept_worker_row
+17,104571-63,ANote Music,[],"[""NOTES""]",suspected_missing_token,missing_fungible_token,"ANote Music support pages identify NOTES as a fungible token for royalties, but the worker left token_ticker empty.",https://support.anotemusic.com/what-are-notes|https://www.anotemusic.com/,edit_row
+18,104579-12,Provenance,"[""HASH""]","[""HASH""]",pass,,,,accept_worker_row
+19,104586-37,Boardroom 35,[],[],pass,,,,accept_worker_row
+20,104591-75,GetHedge,[],[],pass,,,,accept_worker_row
+21,104612-16,CySecure,[],[],pass,,,,accept_worker_row
+22,104617-34,Januar,[],[],pass,,,,accept_worker_row
+23,104627-53,DeSpace Protocol,"[""DES""]","[""DES""]",pass,,,,accept_worker_row
+24,104641-57,SFOX,[],[],pass,,,,accept_worker_row
+25,104657-15,VALIDATED ID,[],[],pass,,,,accept_worker_row
+26,104659-96,New Renaissance,[],[],pass,,,,accept_worker_row
+27,104663-93,Cybera,[],[],pass,,,,accept_worker_row
+28,104667-37,Good Stock,[],[],pass,,,,accept_worker_row
+29,481864-42,Angle (Financial Software),"[""ANGLE"", ""EURA"", ""USDA""]","[""ANGLE"", ""EURA"", ""USDA""]",pass,,,,accept_worker_row
+30,481270-69,SolarMente,[],[],pass,,,,accept_worker_row
