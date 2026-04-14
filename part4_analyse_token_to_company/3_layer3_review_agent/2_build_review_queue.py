@@ -2,8 +2,10 @@
 """
 Build a review queue from validated founder/company extraction results.
 
-Example:
-python3 part4/6_build_review_queue.py
+Harness batch example:
+python3 part4_analyse_token_to_company/3_layer3_review_agent/2_build_review_queue.py \
+  --input-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_validated.csv \
+  --output-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_review_queue.csv
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = SCRIPT_DIR / "output"
+PROJECT_DIR = SCRIPT_DIR.parent
+OUTPUT_DIR = PROJECT_DIR / "output"
 DEFAULT_INPUT_CSV = OUTPUT_DIR / "founder_company_validated.csv"
 DEFAULT_OUTPUT_CSV = OUTPUT_DIR / "founder_company_review_queue.csv"
 OUTPUT_FIELDNAMES = [
@@ -28,6 +31,8 @@ OUTPUT_FIELDNAMES = [
     "review_priority",
     "review_reason",
     "source_labels",
+    "cmc_match_methods",
+    "sentence_risk_flags",
     "validation_issues",
     "founder_people",
     "related_companies",
@@ -62,6 +67,10 @@ def determine_priority(confidence: str, issues: list[str], token_name: str) -> s
     if "variant_token_requires_review" in issues or any(
         term in lowered for term in ("wrapped", "bridged", "staked")
     ):
+        return "high"
+    if "no_slug_match_support" in issues:
+        return "high"
+    if "candidate_sentence_risk_flags_present" in issues:
         return "high"
     if "high_confidence_without_official_support" in issues or "company_looks_like_org" in issues:
         return "high"
@@ -116,6 +125,8 @@ def main() -> None:
                         "review_priority": priority,
                         "review_reason": reason,
                         "source_labels": str(row.get("source_labels") or ""),
+                        "cmc_match_methods": str(row.get("cmc_match_methods") or ""),
+                        "sentence_risk_flags": str(row.get("sentence_risk_flags") or ""),
                         "validation_issues": str(row.get("validation_issues") or ""),
                         "founder_people": str(row.get("founder_people") or ""),
                         "related_companies": str(row.get("related_companies") or ""),

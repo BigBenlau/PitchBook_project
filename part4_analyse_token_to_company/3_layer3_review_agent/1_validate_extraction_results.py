@@ -2,8 +2,11 @@
 """
 Validate founder/company extraction results and attach review signals.
 
-Example:
-python3 part4/5_validate_extraction_results.py --results-csv part4/output/founder_company_extracted.csv
+Harness batch example:
+python3 part4_analyse_token_to_company/3_layer3_review_agent/1_validate_extraction_results.py \
+  --results-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_extracted.csv \
+  --sentences-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/token_evidence_sentences.csv \
+  --output-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_validated.csv
 """
 
 from __future__ import annotations
@@ -16,15 +19,17 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = SCRIPT_DIR / "output"
+PROJECT_DIR = SCRIPT_DIR.parent
+OUTPUT_DIR = PROJECT_DIR / "output"
 DEFAULT_RESULTS_CSV = OUTPUT_DIR / "founder_company_extracted.csv"
 DEFAULT_SENTENCES_CSV = OUTPUT_DIR / "token_evidence_sentences.csv"
 DEFAULT_OUTPUT_CSV = OUTPUT_DIR / "founder_company_validated.csv"
 ORG_TERMS = ("foundation", "dao", "association", "labs", "protocol", "network")
 COMPANY_TERMS = ("inc", "corp", "corporation", "limited", "ltd", "llc", "company", "group")
-INVESTOR_TERMS = ("capital", "ventures", "partners")
+INVESTOR_TERMS = ("capital", "ventures", "partners", "portfolio", "investor")
 EXCHANGE_TERMS = ("binance", "coinbase", "kraken", "okx", "bybit")
-VARIANT_TERMS = ("wrapped", "bridged", "staked", "liquid staking")
+VARIANT_TERMS = ("wrapped", "bridged", "staked", "liquid staking", "synthetic")
+WEAK_RELATION_TERMS = ("listed on", "traded on", "partnered with", "backed by", "available on")
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,10 +53,12 @@ def parse_json_list(value: str) -> list[str]:
     return [str(item).strip() for item in data if str(item).strip()]
 
 
-def load_source_labels(path: Path) -> dict[int, set[str]]:
+def load_sentence_metadata(path: Path) -> tuple[dict[int, set[str]], dict[int, set[str]], dict[int, set[str]]]:
     labels: dict[int, set[str]] = {}
+    match_methods: dict[int, set[str]] = {}
+    risk_flags: dict[int, set[str]] = {}
     if not path.is_file():
-        return labels
+        return labels, match_methods, risk_flags
     with path.open("r", encoding="utf-8-sig", newline="") as infile:
         reader = csv.DictReader(infile)
         for row in reader:
@@ -62,7 +69,12 @@ def load_source_labels(path: Path) -> dict[int, set[str]]:
             source_type = str(row.get("source_type") or "").strip()
             if source_type:
                 labels.setdefault(row_index, set()).add(source_type)
-    return labels
+            match_method = str(row.get("cmc_match_method") or "").strip()
+            if match_method:
+                match_methods.setdefault(row_index, set()).add(match_method)
+            for flag in parse_json_list(str(row.get("risk_flags") or "")):
+                risk_flags.setdefault(row_index, set()).add(flag)
+    return labels, match_methods, risk_flags
 
 
 def looks_like_person(value: str) -> bool:
@@ -76,15 +88,18 @@ def looks_like_person(value: str) -> bool:
 
 def main() -> None:
     args = parse_args()
-    source_labels = load_source_labels(args.sentences_csv.resolve())
+    source_labels, match_methods, sentence_risk_flags = load_sentence_metadata(args.sentences_csv.resolve())
     input_csv = args.results_csv.resolve()
     output_csv = args.output_csv.resolve()
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     with input_csv.open("r", encoding="utf-8-sig", newline="") as infile:
         reader = csv.DictReader(infile)
         fieldnames = list(reader.fieldnames or [])
         extra_fields = [
             "source_labels",
+            "cmc_match_methods",
+            "sentence_risk_flags",
             "validation_issues",
             "suggested_confidence_cap",
             "needs_manual_review",
@@ -106,8 +121,11 @@ def main() -> None:
                 orgs = parse_json_list(str(row.get("foundation_or_orgs") or ""))
                 evidence_spans = parse_json_list(str(row.get("evidence_spans") or ""))
                 labels = sorted(source_labels.get(row_index, set()))
+                row_match_methods = sorted(match_methods.get(row_index, set()))
+                row_sentence_risk_flags = sorted(sentence_risk_flags.get(row_index, set()))
                 issues: list[str] = []
                 confidence_cap = ""
+                evidence_text = " ".join(evidence_spans).lower()
 
                 if (founders or companies or orgs) and not evidence_spans:
                     issues.append("missing_evidence_spans")
@@ -118,6 +136,11 @@ def main() -> None:
                 if confidence == "high" and "official_site" not in labels:
                     issues.append("high_confidence_without_official_support")
                     confidence_cap = "medium"
+
+                if companies and any(term in evidence_text for term in WEAK_RELATION_TERMS):
+                    issues.append("related_company_supported_only_by_weak_relation_context")
+                    if confidence == "high":
+                        confidence_cap = "medium"
 
                 for founder in founders:
                     if not looks_like_person(founder):
@@ -148,12 +171,28 @@ def main() -> None:
                 if confidence == "low":
                     issues.append("low_confidence")
 
+                if row_match_methods and not any(method == "slug" for method in row_match_methods):
+                    issues.append("no_slug_match_support")
+
+                if any(
+                    flag in row_sentence_risk_flags
+                    for flag in (
+                        "negative_relation_context",
+                        "etf_issuer_not_token_issuer",
+                        "non_org_foundation_context",
+                        "variant_token",
+                    )
+                ):
+                    issues.append("candidate_sentence_risk_flags_present")
+
                 needs_manual_review = "1" if issues else "0"
 
                 writer.writerow(
                     {
                         **row,
                         "source_labels": json.dumps(labels, ensure_ascii=False),
+                        "cmc_match_methods": json.dumps(row_match_methods, ensure_ascii=False),
+                        "sentence_risk_flags": json.dumps(row_sentence_risk_flags, ensure_ascii=False),
                         "validation_issues": json.dumps(sorted(set(issues)), ensure_ascii=False),
                         "suggested_confidence_cap": confidence_cap,
                         "needs_manual_review": needs_manual_review,

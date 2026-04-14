@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-'''
-python3 part4/4_extract_founder_companies.py --batch-size 10
-'''
+"""
+Prepare founder/company extraction tasks for a batch-local evidence CSV.
+
+Harness batch example:
+python3 part4_analyse_token_to_company/1_layer1_cg_cmc_baseline/3_extract_founder_companies.py \
+  --input-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/token_evidence_sentences.csv \
+  --tasks-jsonl part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_tasks.jsonl \
+  --batch-dir part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/codex_batches \
+  --result-template part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_extracted.csv \
+  --batch-size 10
+"""
 
 from __future__ import annotations
 
@@ -13,12 +21,13 @@ from urllib.parse import urlparse
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_INPUT_CSV = SCRIPT_DIR / "output" / "coingecko_about_with_cmc_about.csv"
-DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "output"
+PROJECT_DIR = SCRIPT_DIR.parent
+DEFAULT_INPUT_CSV = PROJECT_DIR / "output" / "token_evidence_sentences.csv"
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "output"
 DEFAULT_TASKS_JSONL = DEFAULT_OUTPUT_DIR / "founder_company_tasks.jsonl"
 DEFAULT_BATCH_DIR = DEFAULT_OUTPUT_DIR / "codex_batches"
 DEFAULT_RESULT_TEMPLATE = DEFAULT_OUTPUT_DIR / "founder_company_extracted.csv"
-DEFAULT_PROMPT_PATH = SCRIPT_DIR / "4_founder_company_prompt.txt"
+DEFAULT_PROMPT_PATH = PROJECT_DIR / "4_founder_company_prompt.txt"
 DEFAULT_BATCH_SIZE = 10
 RESULT_FIELDNAMES = [
     "row_index",
@@ -48,7 +57,7 @@ def parse_args() -> argparse.Namespace:
         "--input-csv",
         type=Path,
         default=DEFAULT_INPUT_CSV,
-        help="Merged CSV produced by 1_merge_coingecko_cmc_about.py.",
+        help="Candidate sentence CSV produced by 2_filter_candidate_sentences.py.",
     )
     parser.add_argument(
         "--prompt-path",
@@ -106,13 +115,7 @@ def validate_input_csv(path: Path) -> None:
         raise SystemExit(f"Input CSV does not exist: {path}")
     with path.open("r", encoding="utf-8-sig", newline="") as infile:
         reader = csv.DictReader(infile)
-        required = {
-            "token_name",
-            "token_symbol",
-            "token_href",
-            "about_text",
-            "cmc_about_text",
-        }
+        required = {"row_index", "token_name", "token_symbol", "token_href", "sentence"}
         missing = required.difference(reader.fieldnames or [])
         if missing:
             raise SystemExit(
@@ -134,23 +137,67 @@ def iter_input_rows(path: Path):
             yield index, row
 
 
-def build_task(prompt_template: str, row_index: int, row: dict[str, str]) -> dict[str, object]:
-    token_name = str(row.get("token_name") or "").strip()
-    token_symbol = str(row.get("token_symbol") or "").strip()
-    token_href = str(row.get("token_href") or "").strip()
-    slug = derive_slug(token_href)
-    about_text = str(row.get("about_text") or "").strip()
-    cmc_about_text = str(row.get("cmc_about_text") or "").strip()
+def group_sentence_rows(path: Path) -> list[tuple[int, dict[str, str], list[dict[str, str]]]]:
+    grouped: dict[int, tuple[dict[str, str], list[dict[str, str]]]] = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as infile:
+        reader = csv.DictReader(infile)
+        for row in reader:
+            try:
+                row_index = int(str(row.get("row_index") or "").strip())
+            except ValueError:
+                continue
+            if row_index not in grouped:
+                grouped[row_index] = (row, [])
+            grouped[row_index][1].append(row)
+    return [(row_index, header, rows) for row_index, (header, rows) in sorted(grouped.items())]
+
+
+def build_evidence_block(sentence_rows: list[dict[str, str]]) -> str:
+    lines: list[str] = []
+    for index, row in enumerate(sentence_rows, start=1):
+        source_type = str(row.get("source_type") or "").strip()
+        source_label = str(row.get("source_label") or "").strip()
+        source_url = str(row.get("source_url") or "").strip()
+        cmc_match_method = str(row.get("cmc_match_method") or "").strip()
+        trigger = str(row.get("trigger_keyword") or "").strip()
+        risk_flags = str(row.get("risk_flags") or "[]").strip()
+        sentence = str(row.get("sentence") or "").strip()
+        lines.extend(
+            [
+                f"[{index}] source_type: {source_type or '-'}",
+                f"[{index}] source_label: {source_label or '-'}",
+                f"[{index}] source_url: {source_url or '-'}",
+                f"[{index}] cmc_match_method: {cmc_match_method or '-'}",
+                f"[{index}] trigger_keyword: {trigger or '-'}",
+                f"[{index}] risk_flags: {risk_flags or '[]'}",
+                f"[{index}] sentence: {sentence or '[EMPTY]'}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def build_task(
+    prompt_template: str,
+    row_index: int,
+    header_row: dict[str, str],
+    sentence_rows: list[dict[str, str]],
+) -> dict[str, object]:
+    token_name = str(header_row.get("token_name") or "").strip()
+    token_symbol = str(header_row.get("token_symbol") or "").strip()
+    token_href = str(header_row.get("token_href") or "").strip()
+    slug = str(header_row.get("slug") or "").strip() or derive_slug(token_href)
+    evidence_block = build_evidence_block(sentence_rows)
     prompt = (
         f"{prompt_template}\n\n"
-        f"Return exactly one JSON object for this token.\n\n"
+        f"Return exactly one JSON object for this token.\n"
+        f"Use only the evidence sentences below. Do not infer from token name alone.\n\n"
         f"row_index: {row_index}\n"
         f"token_name: {token_name}\n"
         f"token_symbol: {token_symbol}\n"
         f"token_href: {token_href}\n"
         f"slug: {slug}\n\n"
-        f"CoinGecko about_text:\n{about_text or '[EMPTY]'}\n\n"
-        f"CoinMarketCap cmc_about_text:\n{cmc_about_text or '[EMPTY]'}\n"
+        f"Candidate evidence sentences:\n{evidence_block or '[EMPTY]'}\n"
     )
     return {
         "row_index": row_index,
@@ -158,8 +205,7 @@ def build_task(prompt_template: str, row_index: int, row: dict[str, str]) -> dic
         "token_symbol": token_symbol,
         "token_href": token_href,
         "slug": slug,
-        "about_text": about_text,
-        "cmc_about_text": cmc_about_text,
+        "evidence_sentences": sentence_rows,
         "prompt": prompt,
     }
 
@@ -238,12 +284,14 @@ def main() -> None:
     prompt_template = load_prompt_template(prompt_path)
 
     tasks: list[dict[str, object]] = []
-    for row_index, row in iter_input_rows(input_csv):
+    for row_index, header_row, sentence_rows in group_sentence_rows(input_csv):
         if row_index <= args.offset:
             continue
         if args.limit > 0 and len(tasks) >= args.limit:
             break
-        tasks.append(build_task(prompt_template, row_index, row))
+        if not sentence_rows:
+            continue
+        tasks.append(build_task(prompt_template, row_index, header_row, sentence_rows))
 
     if not tasks:
         raise SystemExit("No rows selected.")

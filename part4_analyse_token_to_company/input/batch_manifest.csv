@@ -1,0 +1,4 @@
+batch_id,batch_path,row_count,start_row,end_row,status
+batch_0001,/Users/benlao/Downloads/STANFORD_20260201/part4_analyse_token_to_company/input/batches/batch_0001.csv,10,1,10,pending
+batch_0002,/Users/benlao/Downloads/STANFORD_20260201/part4_analyse_token_to_company/input/batches/batch_0002.csv,10,11,20,pending
+batch_0003,/Users/benlao/Downloads/STANFORD_20260201/part4_analyse_token_to_company/input/batches/batch_0003.csv,8,21,28,pending

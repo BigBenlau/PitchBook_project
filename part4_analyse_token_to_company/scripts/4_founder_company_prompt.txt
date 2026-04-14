@@ -7,6 +7,11 @@ Rules:
 - `founder_people` should include clearly named founders, co-founders, creators, inventors, or pseudonymous creators.
 - `related_companies` should include issuing companies, development companies, trust companies, operating companies, parent companies, or other directly related commercial entities.
 - `foundation_or_orgs` should include foundations, DAOs, labs, associations, or other non-company organizations directly tied to the token.
+- Do not classify an exchange, investor, custodian, market maker, or partner as a related company unless the evidence explicitly says it is the issuer, developer, operator, or parent company.
+- Do not treat `listed on`, `traded on`, `partnered with`, `backed by`, or `available on` as sufficient evidence for `related_companies`.
+- For wrapped, bridged, staked, liquid-staking, or synthetic tokens, do not inherit the founder/company of the underlying asset unless the evidence directly ties that entity to the wrapped/bridged/staked token.
+- Contributors, maintainers, validators, or ecosystem participants are not founders unless the text explicitly calls them founders, co-founders, creators, or inventors.
+- Use any `risk_flags` in the evidence as warnings. If risk flags indicate weak relation context or variant token ambiguity, lower confidence or return empty arrays.
 - Do not guess. If a field is not supported, return an empty list.
 - `evidence_spans` must be short verbatim snippets copied from the provided text.
 - Keep `notes` short. Mention ambiguity or source conflict if relevant.

@@ -2,8 +2,11 @@
 """
 Extract high-signal candidate sentences from CG/CMC text and official evidence.
 
-Example:
-python3 part4/3_filter_candidate_sentences.py
+Harness batch example:
+python3 part4_analyse_token_to_company/1_layer1_cg_cmc_baseline/2_filter_candidate_sentences.py \
+  --merged-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/merged_input.csv \
+  --official-evidence-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/official_evidence.csv \
+  --output-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/token_evidence_sentences.csv
 """
 
 from __future__ import annotations
@@ -17,7 +20,8 @@ from urllib.parse import urlparse
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = SCRIPT_DIR / "output"
+PROJECT_DIR = SCRIPT_DIR.parent
+OUTPUT_DIR = PROJECT_DIR / "output"
 DEFAULT_MERGED_CSV = OUTPUT_DIR / "coingecko_about_with_cmc_about.csv"
 DEFAULT_OFFICIAL_EVIDENCE_CSV = OUTPUT_DIR / "official_evidence.csv"
 DEFAULT_OUTPUT_CSV = OUTPUT_DIR / "token_evidence_sentences.csv"
@@ -38,7 +42,29 @@ TRIGGER_PATTERNS = [
     "association",
     "issuer",
     "parent company",
+    "built by",
+    "managed by",
+    "governed by",
+    "stewarded by",
+    "core contributor",
+    "operator",
+    "team behind",
+    "company behind",
+    "entity behind",
 ]
+NEGATIVE_PATTERNS = [
+    "listed on",
+    "traded on",
+    "available on",
+    "partnered with",
+    "partnership with",
+    "backed by",
+    "invested by",
+    "portfolio",
+    "custody",
+    "custodian",
+]
+VARIANT_PATTERNS = ["wrapped", "bridged", "staked", "liquid staking", "synthetic"]
 OUTPUT_FIELDNAMES = [
     "row_index",
     "token_name",
@@ -48,7 +74,9 @@ OUTPUT_FIELDNAMES = [
     "source_type",
     "source_label",
     "source_url",
+    "cmc_match_method",
     "trigger_keyword",
+    "risk_flags",
     "sentence",
 ]
 
@@ -94,6 +122,36 @@ def detect_trigger(sentence: str) -> str:
     return ""
 
 
+def detect_risk_flags(sentence: str, token_name: str) -> list[str]:
+    lowered = sentence.lower()
+    token_lowered = token_name.lower()
+    flags: list[str] = []
+    if any(pattern in lowered for pattern in NEGATIVE_PATTERNS):
+        flags.append("negative_relation_context")
+    if "etf" in lowered and "issuer" in lowered:
+        flags.append("etf_issuer_not_token_issuer")
+    if "foundation" in lowered and any(
+        pattern in lowered
+        for pattern in (
+            "technical foundation",
+            "foundation for future",
+            "foundation for the future",
+            "laying out the technical foundation",
+            "foundation of the protocol",
+        )
+    ):
+        flags.append("non_org_foundation_context")
+    if lowered.startswith(("who are the founder", "who were the founder")):
+        flags.append("heading_without_entity")
+    if any(pattern in token_lowered for pattern in VARIANT_PATTERNS):
+        flags.append("variant_token")
+    if "contributor" in lowered and "founder" not in lowered and "co-founder" not in lowered:
+        flags.append("contributor_not_founder")
+    if "ecosystem" in lowered and not any(term in lowered for term in ("issuer", "operator", "developer")):
+        flags.append("ecosystem_context")
+    return sorted(set(flags))
+
+
 def iter_csv_rows(path: Path):
     if not path.is_file():
         return
@@ -124,6 +182,7 @@ def write_sentence(
     source_type: str,
     source_label: str,
     source_url: str,
+    cmc_match_method: str,
     text: str,
     min_length: int,
     seen: set[tuple[int, str, str]],
@@ -135,6 +194,7 @@ def write_sentence(
         trigger = detect_trigger(sentence)
         if not trigger:
             continue
+        risk_flags = detect_risk_flags(sentence, token_name)
         dedupe_key = (row_index, source_type, sentence.lower())
         if dedupe_key in seen:
             continue
@@ -149,7 +209,9 @@ def write_sentence(
                 "source_type": source_type,
                 "source_label": source_label,
                 "source_url": source_url,
+                "cmc_match_method": cmc_match_method,
                 "trigger_keyword": trigger,
+                "risk_flags": json.dumps(risk_flags, ensure_ascii=False),
                 "sentence": sentence,
             }
         )
@@ -180,6 +242,7 @@ def main() -> None:
                 source_type="coingecko_about",
                 source_label="CoinGecko about_text",
                 source_url="",
+                cmc_match_method=str(row.get("cmc_match_method") or ""),
                 text=str(row.get("about_text") or ""),
                 min_length=args.min_length,
                 seen=seen,
@@ -193,6 +256,7 @@ def main() -> None:
                 source_type="cmc_about",
                 source_label="CoinMarketCap about_text",
                 source_url="",
+                cmc_match_method=str(row.get("cmc_match_method") or ""),
                 text=str(row.get("cmc_about_text") or ""),
                 min_length=args.min_length,
                 seen=seen,
@@ -210,6 +274,7 @@ def main() -> None:
                     source_type="official_site",
                     source_label=str(official_row.get("page_type") or "official"),
                     source_url=str(official_row.get("source_url") or ""),
+                    cmc_match_method=str(row.get("cmc_match_method") or ""),
                     text=str(official_row.get("paragraph_text") or ""),
                     min_length=args.min_length,
                     seen=seen,

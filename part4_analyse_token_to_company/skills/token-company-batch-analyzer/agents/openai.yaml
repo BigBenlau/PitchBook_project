@@ -1,0 +1,4 @@
+interface:
+  display_name: "Token Company Batch Analyzer"
+  short_description: "Analyze token batches into founders and companies."
+  default_prompt: "Use this skill to process part4 token batches through the 3-layer founder/company pipeline."

@@ -2,8 +2,10 @@
 """
 Collect high-signal founder/company paragraphs from official token websites.
 
-Example:
-python3 part4/2_collect_official_evidence.py --input-csv part4/output/coingecko_about_with_cmc_about.csv
+Harness batch example:
+python3 part4_analyse_token_to_company/2_layer2_official_evidence/1_collect_official_evidence.py \
+  --input-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/merged_input.csv \
+  --output-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/official_evidence.csv
 """
 
 from __future__ import annotations
@@ -23,7 +25,8 @@ from urllib.request import Request, urlopen
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = SCRIPT_DIR / "output"
+PROJECT_DIR = SCRIPT_DIR.parent
+OUTPUT_DIR = PROJECT_DIR / "output"
 DEFAULT_INPUT_CSV = OUTPUT_DIR / "coingecko_about_with_cmc_about.csv"
 DEFAULT_OUTPUT_CSV = OUTPUT_DIR / "official_evidence.csv"
 DEFAULT_MAX_PAGES = 5
@@ -35,7 +38,19 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/123.0.0.0 Safari/537.36"
 )
-PAGE_SUFFIXES = ["", "/about", "/team", "/foundation", "/docs", "/whitepaper", "/litepaper"]
+PAGE_SUFFIXES = [
+    "",
+    "/about",
+    "/team",
+    "/foundation",
+    "/governance",
+    "/docs",
+    "/whitepaper",
+    "/whitepaper.pdf",
+    "/litepaper",
+    "/company",
+    "/faq",
+]
 SIGNAL_PATTERNS = [
     "founder",
     "co-founder",
@@ -53,6 +68,15 @@ SIGNAL_PATTERNS = [
     "association",
     "issuer",
     "parent company",
+    "built by",
+    "managed by",
+    "governed by",
+    "stewarded by",
+    "core contributor",
+    "operator",
+    "team behind",
+    "company behind",
+    "entity behind",
 ]
 OUTPUT_FIELDNAMES = [
     "row_index",
@@ -81,8 +105,6 @@ NON_OFFICIAL_KEYWORDS = (
     "discord",
     "telegram",
     "reddit",
-    "github",
-    "gitbook",
     "medium.com",
 )
 

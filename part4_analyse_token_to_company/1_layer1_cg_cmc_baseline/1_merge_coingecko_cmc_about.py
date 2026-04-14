@@ -2,10 +2,11 @@ from __future__ import annotations
 
 """
 整體用途：
-1. 讀取 part3/output/coingecko_about.csv 與 part3/output/cmc_about_qa.csv。
+1. 讀取 part3_find_token_list_at_cg_and_cmc/output/coingecko_about.csv
+   與 part3_find_token_list_at_cg_and_cmc/output/cmc_about_qa.csv。
 2. 按 coingecko_about.csv 的 token 順序輸出。
 3. 將 CoinMarketCap 的 about_text 欄位按 slug 合併到 CoinGecko 資料中。
-4. 將 merged CSV 寫到 part4/output/。
+4. 將 merged CSV 寫到 part4_analyse_token_to_company/output/。
 """
 
 import csv
@@ -15,8 +16,9 @@ from urllib.parse import urlparse
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PART3_OUTPUT_DIR = SCRIPT_DIR.parent / "part3" / "output"
-OUTPUT_DIR = SCRIPT_DIR / "output"
+PROJECT_DIR = SCRIPT_DIR.parent
+PART3_OUTPUT_DIR = PROJECT_DIR.parent / "part3_find_token_list_at_cg_and_cmc" / "output"
+OUTPUT_DIR = PROJECT_DIR / "output"
 COINGECKO_PATH = PART3_OUTPUT_DIR / "coingecko_about.csv"
 CMC_PATH = PART3_OUTPUT_DIR / "cmc_about_qa.csv"
 OUTPUT_PATH = OUTPUT_DIR / "coingecko_about_with_cmc_about.csv"
@@ -162,7 +164,7 @@ def main() -> None:
         if "token_href" not in fieldnames:
             raise SystemExit(f"Missing required columns in {COINGECKO_PATH}: token_href")
 
-        output_fieldnames = fieldnames + ["cmc_about_text"]
+        output_fieldnames = fieldnames + ["cmc_about_text", "cmc_match_method"]
         rows_written = 0
         matched_by_slug = 0
         matched_by_symbol = 0
@@ -214,7 +216,13 @@ def main() -> None:
                         flush=True,
                     )
 
-                writer.writerow({**row, "cmc_about_text": cmc_about_text})
+                writer.writerow(
+                    {
+                        **row,
+                        "cmc_about_text": cmc_about_text,
+                        "cmc_match_method": match_method,
+                    }
+                )
                 rows_written += 1
 
     print(
