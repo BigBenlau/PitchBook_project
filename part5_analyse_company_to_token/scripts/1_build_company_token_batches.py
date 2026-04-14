@@ -45,34 +45,6 @@ INPUT_COLUMNS = [
     "AgentTaskScope",
 ]
 
-PROMPT_PLACEHOLDERS = [
-    "skill_path",
-    "task_index",
-    "CompanyID",
-    "CompanyName",
-    "CompanyAlsoKnownAs",
-    "CompanyFormerName",
-    "CompanyLegalName",
-    "Website",
-    "normalized_domain",
-    "ParentCompany",
-    "Exchange",
-    "Ticker",
-    "HQLocation",
-    "HQCountry",
-    "Verticals",
-    "EmergingSpaces",
-    "Description",
-    "Keywords",
-    "MatchedKeywords",
-    "MatchedColumns",
-    "CryptoRelevanceContext",
-    "SearchPolicy",
-    "AgentTaskScope",
-    "completed_at",
-]
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -261,20 +233,6 @@ def build_input_row(
     return {column: output.get(column, "") for column in INPUT_COLUMNS}
 
 
-def render_prompt(template: str, values: dict[str, str]) -> str:
-    rendered = template
-    prompt_values = {
-        **values,
-        "skill_path": str((REPO_ROOT / "skills" / "crypto-token-review").resolve()),
-        "completed_at": "",
-    }
-    for field in PROMPT_PLACEHOLDERS:
-        value = prompt_values.get(field, "")
-        rendered = rendered.replace(f"{{{{{field}}}}}", value)
-        rendered = rendered.replace(f"{{{field}}}", value)
-    return rendered
-
-
 def relative_path(path: Path) -> str:
     resolved = path.resolve()
     try:
@@ -323,7 +281,6 @@ def write_manifest(path: Path, rows: list[dict[str, str]], batch_size: int) -> N
 def write_batches(
     output_dir: Path,
     rows: list[dict[str, str]],
-    template: str,
     template_path: Path,
     batch_size: int,
 ) -> int:
@@ -345,7 +302,6 @@ def write_batches(
                     "plan": relative_path(PART5_DIR / "Plan.md"),
                     "prompt_template": relative_path(template_path),
                     "input_row": row,
-                    "prompt": render_prompt(template, row),
                 }
                 outfile.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return batch_count
@@ -365,7 +321,6 @@ def main() -> None:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    template = template_path.read_text(encoding="utf-8")
     source_rows = load_rows(input_csv)
     filtered_rows = filter_rows(source_rows, flatten_company_ids(args.company_id))
     selected_rows = slice_rows(filtered_rows, args.offset, args.limit)
@@ -385,7 +340,7 @@ def main() -> None:
 
     write_input_csv(output_dir / "input_companies.csv", input_rows)
     write_manifest(output_dir / "manifest.csv", input_rows, args.batch_size)
-    batch_count = write_batches(output_dir, input_rows, template, template_path, args.batch_size)
+    batch_count = write_batches(output_dir, input_rows, template_path, args.batch_size)
 
     print(f"Input CSV: {input_csv}")
     print(f"Source rows: {len(source_rows)}")

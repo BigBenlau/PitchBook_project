@@ -56,13 +56,16 @@ VERIFICATION_CSV_COLUMNS = [
     "task_index",
     "company_id",
     "company_name",
+    "classifier_search_tier",
     "worker_token_ticker",
+    "verifier_search_tier",
     "verifier_token_ticker",
     "verdict",
     "error_type",
     "error_reason",
     "evidence_urls",
     "recommended_action",
+    "corrected_result_row_json",
 ]
 
 SCHEDULE_COLUMNS = [
@@ -239,7 +242,8 @@ Task range:
 - last_company: {last.get("company_name")}
 
 Method:
-- Follow the rendered prompt in each JSONL task.
+- Read `Plan.md` and `agent_prompt_template.md` once, then apply that workflow to each JSONL `input_row`.
+- `tasks.jsonl` carries task data and file references; it does not duplicate the full prompt text.
 - For every company, first classify company type, crypto project likelihood, search tier, project_search_required, risk flags, and classifier reason.
 - Write one classifier/router row per company to `classifier_results.csv`.
 - Use `search_tier = full`, `light`, or `skip_candidate` according to `Plan.md`.
@@ -282,6 +286,7 @@ def build_verifier_instructions(
     verifier_dir: Path,
 ) -> str:
     result_paths = "\n".join(f"- {row['results_csv']}" for row in round_rows)
+    classifier_paths = "\n".join(f"- {row['classifier_results_csv']}" for row in round_rows)
     task_paths = "\n".join(f"- {row['tasks_file']}" for row in round_rows)
     task_ranges = "\n".join(
         f"- {row['batch_file']}: task_index {row['first_task_index']} to {row['last_task_index']}"
@@ -306,12 +311,17 @@ Round task ranges:
 Input task files:
 {task_paths}
 
+Classifier result files:
+{classifier_paths}
+
 Worker result files:
 {result_paths}
 
 Task:
 - Independently check whether each company's `token_ticker` JSON list is correct.
-- Check that classifier/router tiering did not skip rows that should have been searched.
+- Read the classifier/router result for every row before judging the worker result.
+- Check whether `search_tier` was too conservative for the row.
+- Check whether any `skip_candidate` decision was unreasonable or should have been routed to `light` or `full`.
 - Detect missing fungible token tickers.
 - Detect extra or unrelated token tickers.
 - Detect wrong company-to-project mapping.
@@ -340,6 +350,7 @@ Allowed verdict values:
 - suspected_extra_token
 - wrong_project_mapping
 - non_fungible_or_stock_ticker
+- search_tier_too_conservative
 - search_should_not_have_been_skipped
 - insufficient_evidence
 
@@ -350,6 +361,11 @@ Allowed recommended_action values:
 - rerun_company
 - rerun_batch
 - update_prompt_or_process
+
+Authoritative correction rule:
+- If `recommended_action = edit_row`, fill `corrected_result_row_json` with a full JSON object using the exact result-row schema.
+- The corrected JSON must contain all result columns, not only the edited fields.
+- The collector will apply that corrected row directly if it passes validation.
 
 `verification_summary.md` must include:
 - checked row count

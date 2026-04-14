@@ -84,13 +84,16 @@ VERIFICATION_CSV_COLUMNS = [
     "task_index",
     "company_id",
     "company_name",
+    "classifier_search_tier",
     "worker_token_ticker",
+    "verifier_search_tier",
     "verifier_token_ticker",
     "verdict",
     "error_type",
     "error_reason",
     "evidence_urls",
     "recommended_action",
+    "corrected_result_row_json",
 ]
 
 ALLOWED_VERDICTS = {
@@ -99,6 +102,7 @@ ALLOWED_VERDICTS = {
     "suspected_extra_token",
     "wrong_project_mapping",
     "non_fungible_or_stock_ticker",
+    "search_tier_too_conservative",
     "search_should_not_have_been_skipped",
     "insufficient_evidence",
 }
@@ -275,6 +279,46 @@ def json_list_length(value: str) -> int:
     return len(parsed) if isinstance(parsed, list) else -1
 
 
+def normalize_result_row_payload(payload: dict) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for column in RESULT_CSV_COLUMNS:
+        value = payload.get(column, "")
+        if value is None:
+            normalized[column] = ""
+        elif column in LIST_COLUMNS and isinstance(value, list):
+            normalized[column] = json.dumps(value, ensure_ascii=False)
+        else:
+            normalized[column] = str(value)
+    return normalized
+
+
+def parse_corrected_result_row(
+    value: str,
+    source: Path,
+    task_index: int,
+) -> tuple[dict[str, str] | None, list[str]]:
+    raw = (value or "").strip()
+    if not raw:
+        return None, [f"{source}: task_index={task_index}: edit_row requires corrected_result_row_json"]
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, [f"{source}: task_index={task_index}: corrected_result_row_json is not valid JSON"]
+    if not isinstance(parsed, dict):
+        return None, [f"{source}: task_index={task_index}: corrected_result_row_json must be a JSON object"]
+
+    missing = [column for column in RESULT_CSV_COLUMNS if column not in parsed]
+    if missing:
+        return None, [
+            f"{source}: task_index={task_index}: corrected_result_row_json is missing columns "
+            + ",".join(missing)
+        ]
+
+    normalized = normalize_result_row_payload(parsed)
+    errors = validate_result_row(normalized, source)
+    return normalized, errors
+
+
 def validate_result_row(row: dict[str, str], source: Path) -> list[str]:
     errors: list[str] = []
     for column in LIST_COLUMNS:
@@ -428,6 +472,7 @@ def collect_worker_rows(
 def collect_verification_rows(
     schedule_rows: list[dict[str, str]],
     worker_rows_by_task: dict[int, dict[str, str]],
+    classifier_rows_by_task: dict[int, dict[str, str]],
     skip_verification: bool,
     allow_unresolved_verification: bool,
 ) -> tuple[list[dict[str, str]], list[str]]:
@@ -471,31 +516,59 @@ def collect_verification_rows(
             seen_report_tasks.add(task_index)
             verdict = (row.get("verdict") or "").strip()
             action = (row.get("recommended_action") or "").strip()
+            classifier_search_tier = (row.get("classifier_search_tier") or "").strip()
+            verifier_search_tier = (row.get("verifier_search_tier") or "").strip()
             if verdict not in ALLOWED_VERDICTS:
                 validation_errors.append(f"{report}: task_index={task_index}: invalid verdict {verdict!r}")
             if action not in ALLOWED_VERIFICATION_ACTIONS:
                 validation_errors.append(f"{report}: task_index={task_index}: invalid recommended_action {action!r}")
+            if classifier_search_tier not in ALLOWED_SEARCH_TIERS:
+                validation_errors.append(
+                    f"{report}: task_index={task_index}: invalid classifier_search_tier {classifier_search_tier!r}"
+                )
+            classifier_row = classifier_rows_by_task.get(task_index)
+            if classifier_row and classifier_search_tier != (classifier_row.get("search_tier") or "").strip():
+                validation_errors.append(
+                    f"{report}: task_index={task_index}: classifier_search_tier does not match classifier_results.csv"
+                )
+            if verifier_search_tier not in ALLOWED_SEARCH_TIERS:
+                validation_errors.append(
+                    f"{report}: task_index={task_index}: invalid verifier_search_tier {verifier_search_tier!r}"
+                )
             if verdict == "pass" and action != "accept_worker_row":
                 validation_errors.append(f"{report}: task_index={task_index}: pass verdict must use accept_worker_row")
             if verdict != "pass" and not (row.get("error_reason") or "").strip():
                 validation_errors.append(f"{report}: task_index={task_index}: non-pass verdict requires error_reason")
+            if action == "edit_row":
+                corrected_row, corrected_errors = parse_corrected_result_row(
+                    row.get("corrected_result_row_json", ""),
+                    report,
+                    task_index,
+                )
+                validation_errors.extend(corrected_errors)
+                if corrected_row:
+                    if corrected_row.get("task_index") != str(task_index):
+                        validation_errors.append(
+                            f"{report}: task_index={task_index}: corrected_result_row_json task_index mismatch"
+                        )
+                    if corrected_row.get("company_id") != (row.get("company_id") or ""):
+                        validation_errors.append(
+                            f"{report}: task_index={task_index}: corrected_result_row_json company_id mismatch"
+                        )
+                    verifier_token_ticker = (row.get("verifier_token_ticker") or "").strip()
+                    if verifier_token_ticker and corrected_row.get("token_ticker", "").strip() != verifier_token_ticker:
+                        validation_errors.append(
+                            f"{report}: task_index={task_index}: corrected_result_row_json token_ticker must match verifier_token_ticker"
+                        )
             if not allow_unresolved_verification and action in BLOCKING_VERIFICATION_ACTIONS:
                 worker_row = worker_rows_by_task.get(task_index)
                 edit_resolved = (
                     action == "edit_row"
-                    and worker_row is not None
-                    and (worker_row.get("token_ticker") or "").strip()
-                    == (row.get("verifier_token_ticker") or "").strip()
+                    and bool((row.get("corrected_result_row_json") or "").strip())
                 )
                 if not edit_resolved:
                     validation_errors.append(
                         f"{report}: task_index={task_index}: verifier action {action} blocks merge until resolved"
-                    )
-            if action == "mark_manual_review":
-                worker_row = worker_rows_by_task.get(task_index)
-                if worker_row and worker_row.get("needs_manual_review") != "yes":
-                    validation_errors.append(
-                        f"{report}: task_index={task_index}: verifier requests manual review but worker row is not marked yes"
                     )
             all_verifier_rows.append({column: row.get(column, "") for column in VERIFICATION_CSV_COLUMNS})
 
@@ -508,6 +581,64 @@ def collect_verification_rows(
 
     all_verifier_rows.sort(key=lambda row: int(row["task_index"]))
     return all_verifier_rows, validation_errors
+
+
+def apply_verifier_review_decisions(
+    worker_rows: list[dict[str, str]],
+    verifier_rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    if not verifier_rows:
+        return worker_rows
+
+    verifier_by_task = {
+        int(row["task_index"]): row
+        for row in verifier_rows
+    }
+    updated_rows: list[dict[str, str]] = []
+
+    for row in worker_rows:
+        task_index = int(row["task_index"])
+        verifier_row = verifier_by_task.get(task_index)
+        updated_row = dict(row)
+        if verifier_row:
+            action = (verifier_row.get("recommended_action") or "").strip()
+
+            if action == "mark_manual_review":
+                updated_row["needs_manual_review"] = "yes"
+            elif action == "accept_worker_row":
+                updated_row["needs_manual_review"] = "no"
+            elif action == "edit_row":
+                corrected_row, corrected_errors = parse_corrected_result_row(
+                    verifier_row.get("corrected_result_row_json", ""),
+                    Path("<verification-report>"),
+                    task_index,
+                )
+                if corrected_row and not corrected_errors:
+                    updated_row = corrected_row
+
+        updated_rows.append(updated_row)
+
+    return updated_rows
+
+
+def validate_rows_against_classifier(
+    rows: list[dict[str, str]],
+    classifier_rows_by_task: dict[int, dict[str, str]],
+    source_label: str,
+) -> list[str]:
+    validation_errors: list[str] = []
+    for row in rows:
+        task_index = int(row["task_index"])
+        classifier_row = classifier_rows_by_task.get(task_index)
+        if not classifier_row:
+            validation_errors.append(f"{source_label}: task_index={task_index}: missing classifier row")
+            continue
+        for column in ["company_type", "crypto_project_likelihood", "project_search_required"]:
+            if row.get(column) != classifier_row.get(column):
+                validation_errors.append(
+                    f"{source_label}: task_index={task_index}: {column} does not match classifier_results.csv"
+                )
+    return validation_errors
 
 
 def load_existing_results(path: Path, replace_output: bool) -> list[dict[str, str]]:
@@ -641,10 +772,22 @@ def main() -> None:
     verifier_rows, verifier_errors = collect_verification_rows(
         schedule_rows=schedule_rows,
         worker_rows_by_task=worker_rows_by_task,
+        classifier_rows_by_task=classifier_rows_by_task,
         skip_verification=args.skip_verification,
         allow_unresolved_verification=args.allow_unresolved_verification,
     )
     validation_errors.extend(verifier_errors)
+    new_rows = apply_verifier_review_decisions(new_rows, verifier_rows)
+    worker_rows_by_task = {int(row["task_index"]): row for row in new_rows}
+    for row in new_rows:
+        validation_errors.extend(validate_result_row(row, Path("<post-verifier-output>")))
+    validation_errors.extend(
+        validate_rows_against_classifier(
+            rows=new_rows,
+            classifier_rows_by_task=classifier_rows_by_task,
+            source_label="<post-verifier-output>",
+        )
+    )
 
     existing_rows = load_existing_results(output_csv, replace_output=args.replace_output)
     final_rows, merge_errors = merge_existing_and_new(existing_rows, new_rows)

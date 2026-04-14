@@ -60,7 +60,7 @@ Pipeline:
 9. Each worker writes one `results.csv` for its assigned batch.
 10. Collector performs structural validation on classifier/router and worker outputs.
 11. Before the round ends, spawn a fresh verifier subagent to independently check token correctness for the round.
-12. The verifier checks whether each company's `token_ticker` list has omissions, extra tickers, wrong project mapping, or non-fungible/stock ticker contamination.
+12. The verifier reads the classifier/router outputs as part of its review and checks whether each company's `token_ticker` list has omissions, extra tickers, wrong project mapping, or non-fungible/stock ticker contamination.
 13. Main agent reviews the verifier report, fixes rows or marks manual review/rerun decisions.
 14. Collector or coordinator merges verified clean rows into final `results.csv`.
 15. Extract `needs_manual_review.csv`.
@@ -323,6 +323,32 @@ Light search policy:
 - Do not browse broadly through generic secondary sources unless the first-pass evidence shows a possible owned project or token.
 - If the light check finds a plausible token or project signal, upgrade the row to full search or mark `needs_manual_review = yes` if the round budget cannot support a full rerun.
 
+Light query playbook:
+
+1. exact-domain token probe using `normalized_domain` or official host
+2. exact `CompanyName` token/project probe
+3. exact alias probe from `CompanyAlsoKnownAs`
+4. exact former-name probe from `CompanyFormerName`
+5. exact CoinGecko/CoinMarketCap project or token page probe
+
+Light-tier requirements:
+
+- before finalizing `token_ticker = []`, run the exact-domain token probe
+- if any probe produces a plausible company -> project -> token signal, reroute to `full` or mark `needs_manual_review = yes`
+- do not treat light search as a vague skim; it is a fixed low-cost probe sequence
+
+Full query playbook:
+
+1. company identity stage: confirm official domain, aliases, former names, and current brand
+2. project discovery stage: identify the owned project, protocol, app, or tokenized product
+3. token confirmation stage: confirm fungible token name, ticker, and token page
+
+Full-tier requirements:
+
+- use at least one primary source for company identity, one for project identity, and one for token identity
+- before finalizing `token_ticker = []`, run the exact-domain token probe
+- a token page alone is not enough unless it maps back to the company or owned project
+
 Recommended source priority:
 
 1. Official website, docs, whitepaper, litepaper, blog, FAQ, governance forum, or announcement.
@@ -367,6 +393,14 @@ Column rules:
 - `evidence_source_types`: `|`-separated source type labels
 - `confidence`: `high`, `medium`, or `low`
 - `needs_manual_review`: `yes` or `no`
+
+Confidence and review are separate decisions:
+
+- `confidence = high`: evidence clearly maps company or owned project to the token, typically with official or strong primary support
+- `confidence = medium`: evidence is sufficient to merge, but is not as strong or complete as `high`
+- `confidence = low`: evidence is weak, thin, or incomplete
+- `needs_manual_review` must not be derived from `confidence` alone
+- `medium` confidence rows may still merge with `needs_manual_review = no` when the mapping is stable and verifier review is clean
 
 No-token or skipped-search case:
 
@@ -438,8 +472,10 @@ Set `needs_manual_review = yes` when any of these are true:
 - company has multiple brands, former names, subsidiaries, or project names that could change the mapping
 - company appears NFT-only or gaming-related but may also have a fungible token
 - evidence depends on a weak similarity between company name and token/project name
-- worker is not confident enough to mark the row high-confidence
 - CSV row required repair during collection
+
+Do not set `needs_manual_review = yes` only because `confidence` is `medium` or `low`.
+Use manual review only for unresolved ambiguity, unresolved evidence gaps, or unresolved verifier concerns.
 
 Manual review rows are not failures. They are the audit queue:
 
@@ -455,11 +491,13 @@ Fresh verifier rule:
 - Do not reuse the project/token search worker as its own verifier.
 - Do not reuse a verifier from a previous round.
 - The verifier must read this `Plan.md` before checking results.
+- The verifier must receive the round `classifier_results.csv` files as part of its review input.
 - The verifier must receive the round input tasks, worker `results.csv`, and any available evidence URLs.
 
 Verifier scope:
 
 - Re-check whether each company has zero, one, or multiple fungible token tickers.
+- Check whether classifier/router `search_tier` was too conservative for the row.
 - Detect missing tickers in `token_ticker`.
 - Detect extra or over-reported tickers in `token_ticker`.
 - Detect wrong company-to-project mapping.
@@ -484,7 +522,7 @@ Store verifier outputs in the current round run directory. If temporary run dire
 `verification_report.csv` should include:
 
 ```csv
-task_index,company_id,company_name,worker_token_ticker,verifier_token_ticker,verdict,error_type,error_reason,evidence_urls,recommended_action
+task_index,company_id,company_name,classifier_search_tier,worker_token_ticker,verifier_search_tier,verifier_token_ticker,verdict,error_type,error_reason,evidence_urls,recommended_action,corrected_result_row_json
 ```
 
 Allowed `verdict` values:
@@ -494,6 +532,7 @@ Allowed `verdict` values:
 - `suspected_extra_token`
 - `wrong_project_mapping`
 - `non_fungible_or_stock_ticker`
+- `search_tier_too_conservative`
 - `search_should_not_have_been_skipped`
 - `insufficient_evidence`
 
@@ -506,11 +545,20 @@ Allowed `recommended_action` values:
 - `rerun_batch`
 - `update_prompt_or_process`
 
+Authoritative verifier rule:
+
+- `edit_row` is authoritative only when `corrected_result_row_json` is present and valid
+- `corrected_result_row_json` must be a full JSON object using the exact result-row schema
+- collector applies the corrected row directly if it passes validation
+
 Main agent responsibilities after verifier report:
 
 - Review every non-`pass` verifier row before the round is considered complete.
 - If the verifier finds a clear worker error, update the row or rerun the company/batch before merging.
 - If the verifier finds uncertainty but not a clear correction, set `needs_manual_review = yes`.
+- If the verifier returns `pass` with `accept_worker_row`, set `needs_manual_review = no` for that row unless another unresolved manual-review condition still exists.
+- If the verifier returns `edit_row` and `corrected_result_row_json` passes validation, collector should apply that corrected row as the authoritative merged row.
+- If the verifier returns `mark_manual_review`, set `needs_manual_review = yes`.
 - If the verifier identifies a systematic cause, update the operation flow before the next round.
 - Report the detected cause back to the main agent context, including whether it came from classification, search, evidence interpretation, CSV formatting, or prompt ambiguity.
 
