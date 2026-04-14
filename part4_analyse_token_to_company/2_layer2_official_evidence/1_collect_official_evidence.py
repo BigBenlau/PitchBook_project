@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-Collect high-signal founder/company paragraphs from official token websites.
-
-Harness batch example:
-python3 part4_analyse_token_to_company/2_layer2_official_evidence/1_collect_official_evidence.py \
-  --input-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/merged_input.csv \
-  --output-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/official_evidence.csv
+Collect high-signal company/foundation/operator paragraphs from official token websites.
 """
 
 from __future__ import annotations
@@ -27,63 +22,57 @@ from urllib.request import Request, urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
-DEFAULT_INPUT_CSV = OUTPUT_DIR / "coingecko_about_with_cmc_about.csv"
+DEFAULT_INPUT_CSV = OUTPUT_DIR / "token_master.csv"
 DEFAULT_OUTPUT_CSV = OUTPUT_DIR / "official_evidence.csv"
-DEFAULT_MAX_PAGES = 5
-DEFAULT_MAX_PARAGRAPHS = 5
+DEFAULT_MAX_PAGES = 6
+DEFAULT_MAX_PARAGRAPHS = 6
 REQUEST_DELAY_SECONDS = 0.5
 RETRY_LIMIT = 3
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/123.0.0.0 Safari/537.36"
 )
+
 PAGE_SUFFIXES = [
     "",
     "/about",
-    "/team",
+    "/company",
     "/foundation",
     "/governance",
+    "/legal",
+    "/team",
     "/docs",
     "/whitepaper",
-    "/whitepaper.pdf",
     "/litepaper",
-    "/company",
-    "/faq",
 ]
+
 SIGNAL_PATTERNS = [
-    "founder",
-    "co-founder",
-    "founded by",
-    "created by",
-    "invented by",
-    "launched by",
-    "issued by",
+    "issuer",
+    "issuing entity",
     "developed by",
     "operated by",
     "maintained by",
-    "foundation",
-    "labs",
-    "dao",
-    "association",
-    "issuer",
-    "parent company",
-    "built by",
     "managed by",
     "governed by",
-    "stewarded by",
-    "core contributor",
-    "operator",
-    "team behind",
-    "company behind",
-    "entity behind",
+    "parent company",
+    "trust company",
+    "foundation",
+    "association",
+    "dao",
+    "labs",
+    "founded by",
+    "created by",
+    "co-founder",
+    "founder",
 ]
+
 OUTPUT_FIELDNAMES = [
-    "row_index",
+    "token_id",
     "token_name",
     "token_symbol",
-    "token_href",
-    "slug",
+    "token_type",
     "official_website",
     "source_url",
     "page_type",
@@ -93,24 +82,13 @@ OUTPUT_FIELDNAMES = [
     "status",
     "error",
 ]
+
 SKIP_TAGS = {"script", "style", "svg", "noscript"}
 BLOCK_TAGS = {"p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "div"}
-NON_OFFICIAL_KEYWORDS = (
-    "twitter",
-    "x.com",
-    "facebook",
-    "instagram",
-    "youtube",
-    "linkedin",
-    "discord",
-    "telegram",
-    "reddit",
-    "medium.com",
-)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Collect official-site founder/company evidence.")
+    parser = argparse.ArgumentParser(description="Collect official-site company/foundation evidence.")
     parser.add_argument("--input-csv", type=Path, default=DEFAULT_INPUT_CSV)
     parser.add_argument("--output-csv", type=Path, default=DEFAULT_OUTPUT_CSV)
     parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES)
@@ -124,48 +102,8 @@ def normalize_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", unescape(value or "").replace("\xa0", " ")).strip()
 
 
-def derive_slug(token_href: str) -> str:
-    path = urlparse((token_href or "").strip()).path.strip("/")
-    if not path:
-        return ""
-    return path.split("/")[-1].strip().lower()
-
-
-def parse_json_object(value: str) -> dict[str, str]:
-    text = (value or "").strip()
-    if not text:
-        return {}
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    result: dict[str, str] = {}
-    for key, item in data.items():
-        item_text = str(item or "").strip()
-        if item_text:
-            result[str(key or "").strip()] = item_text
-    return result
-
-
-def choose_official_website(row: dict[str, str]) -> str:
-    explicit = str(row.get("official_website") or "").strip()
-    if explicit:
-        return explicit
-
-    websites = parse_json_object(str(row.get("websites") or ""))
-    for _, url in websites.items():
-        lowered = url.lower()
-        if lowered.startswith(("http://", "https://")) and not any(
-            keyword in lowered for keyword in NON_OFFICIAL_KEYWORDS
-        ):
-            return url
-    return ""
-
-
 def canonicalize_root_url(url: str) -> str:
-    parsed = urlparse(url.strip())
+    parsed = urlparse((url or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return f"{parsed.scheme}://{parsed.netloc}"
@@ -182,8 +120,7 @@ def build_candidate_urls(root_url: str, max_pages: int) -> list[tuple[str, str]]
         if normalized in seen:
             continue
         seen.add(normalized)
-        page_type = suffix.strip("/") or "home"
-        candidates.append((url, page_type))
+        candidates.append((url, suffix.strip("/") or "home"))
     return candidates
 
 
@@ -288,9 +225,8 @@ def select_top_paragraphs(paragraphs: Iterable[str], max_paragraphs: int) -> lis
 
 def iter_input_rows(path: Path):
     with path.open("r", encoding="utf-8-sig", newline="") as infile:
-        reader = csv.DictReader(infile)
-        for index, row in enumerate(reader, start=1):
-            yield index, row
+        for row in csv.DictReader(infile):
+            yield row
 
 
 def main() -> None:
@@ -303,26 +239,25 @@ def main() -> None:
         writer = csv.DictWriter(outfile, fieldnames=OUTPUT_FIELDNAMES)
         writer.writeheader()
 
-        for row_index, row in iter_input_rows(input_csv):
-            if row_index <= args.offset:
+        for row_number, row in enumerate(iter_input_rows(input_csv), start=1):
+            if row_number <= args.offset:
                 continue
-            if args.limit > 0 and row_index > args.offset + args.limit:
+            if args.limit > 0 and row_number > args.offset + args.limit:
                 break
 
+            token_id = str(row.get("token_id") or "").strip()
             token_name = str(row.get("token_name") or "").strip()
             token_symbol = str(row.get("token_symbol") or "").strip()
-            token_href = str(row.get("token_href") or "").strip()
-            slug = derive_slug(token_href)
-            official_website = canonicalize_root_url(choose_official_website(row))
+            token_type = str(row.get("token_type") or "").strip()
+            official_website = canonicalize_root_url(str(row.get("official_website") or ""))
 
             if not official_website:
                 writer.writerow(
                     {
-                        "row_index": row_index,
+                        "token_id": token_id,
                         "token_name": token_name,
                         "token_symbol": token_symbol,
-                        "token_href": token_href,
-                        "slug": slug,
+                        "token_type": token_type,
                         "official_website": "",
                         "source_url": "",
                         "page_type": "",
@@ -346,17 +281,13 @@ def main() -> None:
                     last_error = str(exc)
                     continue
 
-                if not selected:
-                    continue
-
                 for rank, (paragraph, hits) in enumerate(selected, start=1):
                     writer.writerow(
                         {
-                            "row_index": row_index,
+                            "token_id": token_id,
                             "token_name": token_name,
                             "token_symbol": token_symbol,
-                            "token_href": token_href,
-                            "slug": slug,
+                            "token_type": token_type,
                             "official_website": official_website,
                             "source_url": source_url,
                             "page_type": page_type,
@@ -372,11 +303,10 @@ def main() -> None:
             if not wrote_signal:
                 writer.writerow(
                     {
-                        "row_index": row_index,
+                        "token_id": token_id,
                         "token_name": token_name,
                         "token_symbol": token_symbol,
-                        "token_href": token_href,
-                        "slug": slug,
+                        "token_type": token_type,
                         "official_website": official_website,
                         "source_url": "",
                         "page_type": "",

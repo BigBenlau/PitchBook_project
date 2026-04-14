@@ -1,24 +1,42 @@
 # Risk Rules
 
-## Layer Escalation
+## 1. Field-Level Escalation
 
-Escalate a row from Layer 1 to Layer 2 if:
+Escalate a token when any target remains unresolved:
 
-- all three target arrays are empty
-- confidence is `low`
-- evidence comes from only one CG/CMC source
-- candidate sentence has risk flags
-- token is wrapped, bridged, staked, liquid-staking, or synthetic
-- evidence mentions a project but not a directly related token entity
+- `founder_status = unresolved`
+- `related_company_status = unresolved`
+- `foundation_status = unresolved`
 
-Escalate to Layer 3 if:
+This is field-level escalation, not row-level escalation.
 
-- official evidence is unavailable or conflicts with CG/CMC
-- official page is JS-rendered or PDF-only and cannot be parsed
-- founder/company/org remains ambiguous after Layer 2
-- token is high priority and unresolved
+If one target is supported and two are unresolved, the token is still incomplete and must remain in the workflow.
 
-## False Positive Controls
+## 2. High-Risk Token Types
+
+Treat these token types as high-risk:
+
+- `wrapped_or_bridged`
+- `liquid_staking_or_receipt`
+- `synthetic_or_fund`
+- `unknown`
+
+These types should usually escalate faster and remain in review longer.
+
+## 3. Official Evidence Priority
+
+For `related_companies` and `foundation_or_orgs`, use official/company evidence first.
+
+Do not let CG/CMC founder prose become the only high-confidence basis for:
+
+- issuer attribution
+- operator attribution
+- parent company attribution
+- foundation attribution
+
+If official/company evidence is absent or conflicts with CG/CMC, escalate.
+
+## 4. False Positive Controls
 
 Do not treat these as related company evidence:
 
@@ -35,37 +53,38 @@ Common false positives:
 
 - ETF issuer is not token issuer
 - technical foundation is not a foundation organization
-- heading-only sentences such as "Who are the founders?" contain no entity
+- heading-only founder text contains no entity
 - ecosystem participants are not operators
 - contributors are not founders unless explicitly called founders
+- underlying asset team is not automatically the wrapped / bridged / staked token team
 
-## Confidence Caps
+## 5. Confidence Controls
 
 Use `high` only if:
 
-- official source explicitly supports the result, or
-- two independent structured sources agree and there is no conflict
+- the evidence is direct, correctly typed, and strongly supported
+- company/foundation claims have official support
 
 Use max `medium` if:
 
-- only one non-official source supports the result
-- evidence has weak relation context
-- CMC match method is not `slug`
+- only one weak source supports the result
+- official/company evidence is missing for a company/foundation claim
+- target coverage is incomplete
 
 Use `low` if:
 
-- evidence is incomplete
-- source text is ambiguous
-- entity type could be confused
+- evidence is ambiguous
+- entity typing is fragile
+- the token is high-risk and the mapping is still partial
 
-## Mandatory Review
+## 6. Mandatory Review
 
 Send to review queue if:
 
-- non-slug match
-- high confidence without official support
-- any target array is populated without evidence spans
-- entity type appears mixed
-- token variant risk is present
+- any target is unresolved
+- `status = pending_layer3`
+- `needs_manual_review = 1`
+- token type is high-risk
+- company/foundation support exists without official-site evidence
 - source conflict exists
-- weak relation context supports related company
+- weak relation context supports a company claim

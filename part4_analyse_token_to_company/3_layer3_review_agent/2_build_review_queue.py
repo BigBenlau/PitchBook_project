@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-Build a review queue from validated founder/company extraction results.
-
-Harness batch example:
-python3 part4_analyse_token_to_company/3_layer3_review_agent/2_build_review_queue.py \
-  --input-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_validated.csv \
-  --output-csv part4_analyse_token_to_company/agent_runs/token_company_parallel/batch_0001/founder_company_review_queue.csv
+Build a field-level review queue from consolidated Part4 token_entity_results.csv.
 """
 
 from __future__ import annotations
@@ -19,31 +14,40 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
-DEFAULT_INPUT_CSV = OUTPUT_DIR / "founder_company_validated.csv"
-DEFAULT_OUTPUT_CSV = OUTPUT_DIR / "founder_company_review_queue.csv"
+DEFAULT_INPUT_CSV = OUTPUT_DIR / "token_entity_results.csv"
+DEFAULT_OUTPUT_CSV = OUTPUT_DIR / "token_entity_review_queue.csv"
+
 OUTPUT_FIELDNAMES = [
-    "row_index",
+    "token_id",
     "token_name",
     "token_symbol",
-    "token_href",
-    "slug",
+    "token_type",
     "confidence",
     "review_priority",
     "review_reason",
-    "source_labels",
-    "cmc_match_methods",
-    "sentence_risk_flags",
-    "validation_issues",
+    "unresolved_targets",
+    "needs_manual_review",
+    "founder_status",
+    "related_company_status",
+    "foundation_status",
     "founder_people",
     "related_companies",
     "foundation_or_orgs",
-    "evidence_spans",
+    "source_urls",
+    "source_labels",
     "notes",
 ]
 
+HIGH_RISK_TOKEN_TYPES = {
+    "wrapped_or_bridged",
+    "liquid_staking_or_receipt",
+    "synthetic_or_fund",
+    "unknown",
+}
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build review queue.")
+    parser = argparse.ArgumentParser(description="Build Part4 field-level review queue.")
     parser.add_argument("--input-csv", type=Path, default=DEFAULT_INPUT_CSV)
     parser.add_argument("--output-csv", type=Path, default=DEFAULT_OUTPUT_CSV)
     return parser.parse_args()
@@ -62,29 +66,42 @@ def parse_json_list(value: str) -> list[str]:
     return [str(item).strip() for item in data if str(item).strip()]
 
 
-def determine_priority(confidence: str, issues: list[str], token_name: str) -> str:
-    lowered = token_name.lower()
-    if "variant_token_requires_review" in issues or any(
-        term in lowered for term in ("wrapped", "bridged", "staked")
-    ):
-        return "high"
-    if "no_slug_match_support" in issues:
-        return "high"
-    if "candidate_sentence_risk_flags_present" in issues:
-        return "high"
-    if "high_confidence_without_official_support" in issues or "company_looks_like_org" in issues:
-        return "high"
-    if confidence == "low":
+def unresolved_targets(row: dict[str, str]) -> list[str]:
+    targets: list[str] = []
+    if str(row.get("founder_status") or "").strip() == "unresolved":
+        targets.append("founder")
+    if str(row.get("related_company_status") or "").strip() == "unresolved":
+        targets.append("related_company")
+    if str(row.get("foundation_status") or "").strip() == "unresolved":
+        targets.append("foundation")
+    return targets
+
+
+def determine_priority(row: dict[str, str], unresolved: list[str]) -> str:
+    token_type = str(row.get("token_type") or "").strip()
+    confidence = str(row.get("confidence") or "").strip().lower()
+    manual_review = str(row.get("needs_manual_review") or "").strip() == "1"
+    if unresolved:
+        if token_type in HIGH_RISK_TOKEN_TYPES or len(unresolved) >= 2:
+            return "high"
         return "medium"
+    if manual_review:
+        return "high" if token_type in HIGH_RISK_TOKEN_TYPES or confidence == "low" else "medium"
     return "low"
 
 
-def build_reason(issues: list[str], founders: list[str], companies: list[str], orgs: list[str]) -> str:
-    if issues:
-        return "; ".join(issues)
-    if not founders and not companies and not orgs:
-        return "no_founder_company_org_extracted"
-    return "manual_review_requested"
+def build_reason(row: dict[str, str], unresolved: list[str]) -> str:
+    reasons: list[str] = []
+    if unresolved:
+        reasons.append("unresolved_targets=" + ",".join(unresolved))
+    if str(row.get("status") or "").strip() == "pending_layer3":
+        reasons.append("pending_layer3")
+    if str(row.get("needs_manual_review") or "").strip() == "1":
+        reasons.append("manual_review_requested")
+    token_type = str(row.get("token_type") or "").strip()
+    if token_type in HIGH_RISK_TOKEN_TYPES:
+        reasons.append(f"high_risk_token_type={token_type}")
+    return "; ".join(reasons) if reasons else "manual_review_requested"
 
 
 def main() -> None:
@@ -100,38 +117,34 @@ def main() -> None:
             writer.writeheader()
 
             for row in reader:
-                needs_manual_review = str(row.get("needs_manual_review") or "").strip() == "1"
-                founders = parse_json_list(str(row.get("founder_people") or ""))
-                companies = parse_json_list(str(row.get("related_companies") or ""))
-                orgs = parse_json_list(str(row.get("foundation_or_orgs") or ""))
-                issues = parse_json_list(str(row.get("validation_issues") or ""))
-                confidence = str(row.get("confidence") or "").strip().lower()
-                token_name = str(row.get("token_name") or "").strip()
-
-                if not needs_manual_review and (founders or companies or orgs) and confidence != "low":
+                unresolved = unresolved_targets(row)
+                manual_review = str(row.get("needs_manual_review") or "").strip() == "1"
+                if not unresolved and not manual_review:
                     continue
-
-                reason = build_reason(issues, founders, companies, orgs)
-                priority = determine_priority(confidence, issues, token_name)
 
                 writer.writerow(
                     {
-                        "row_index": str(row.get("row_index") or ""),
-                        "token_name": token_name,
+                        "token_id": str(row.get("token_id") or ""),
+                        "token_name": str(row.get("token_name") or ""),
                         "token_symbol": str(row.get("token_symbol") or ""),
-                        "token_href": str(row.get("token_href") or ""),
-                        "slug": str(row.get("slug") or ""),
+                        "token_type": str(row.get("token_type") or ""),
                         "confidence": str(row.get("confidence") or ""),
-                        "review_priority": priority,
-                        "review_reason": reason,
-                        "source_labels": str(row.get("source_labels") or ""),
-                        "cmc_match_methods": str(row.get("cmc_match_methods") or ""),
-                        "sentence_risk_flags": str(row.get("sentence_risk_flags") or ""),
-                        "validation_issues": str(row.get("validation_issues") or ""),
-                        "founder_people": str(row.get("founder_people") or ""),
-                        "related_companies": str(row.get("related_companies") or ""),
-                        "foundation_or_orgs": str(row.get("foundation_or_orgs") or ""),
-                        "evidence_spans": str(row.get("evidence_spans") or ""),
+                        "review_priority": determine_priority(row, unresolved),
+                        "review_reason": build_reason(row, unresolved),
+                        "unresolved_targets": json.dumps(unresolved, ensure_ascii=False),
+                        "needs_manual_review": str(row.get("needs_manual_review") or "0"),
+                        "founder_status": str(row.get("founder_status") or ""),
+                        "related_company_status": str(row.get("related_company_status") or ""),
+                        "foundation_status": str(row.get("foundation_status") or ""),
+                        "founder_people": json.dumps(parse_json_list(str(row.get("founder_people") or "")), ensure_ascii=False),
+                        "related_companies": json.dumps(
+                            parse_json_list(str(row.get("related_companies") or "")), ensure_ascii=False
+                        ),
+                        "foundation_or_orgs": json.dumps(
+                            parse_json_list(str(row.get("foundation_or_orgs") or "")), ensure_ascii=False
+                        ),
+                        "source_urls": str(row.get("source_urls") or "[]"),
+                        "source_labels": str(row.get("source_labels") or "[]"),
                         "notes": str(row.get("notes") or ""),
                     }
                 )

@@ -12,81 +12,51 @@ PART4_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART4_DIR.parent
 
 DEFAULT_MANIFEST = PART4_DIR / "input" / "batch_manifest.csv"
+DEFAULT_TOKEN_MASTER = PART4_DIR / "output" / "token_master.csv"
 DEFAULT_RUNS_DIR = PART4_DIR / "agent_runs" / "token_company_parallel"
 DEFAULT_WORKERS = 5
 
-EXTRACTED_CSV_COLUMNS = [
-    "row_index",
+RESULT_COLUMNS = [
+    "token_id",
     "token_name",
     "token_symbol",
+    "coingecko_slug",
+    "cmc_slug",
     "token_href",
-    "slug",
+    "official_website",
+    "token_type",
     "founder_people",
+    "founder_status",
+    "founder_evidence_spans",
     "related_companies",
+    "related_company_status",
+    "related_company_evidence_spans",
     "foundation_or_orgs",
-    "confidence",
-    "evidence_spans",
-    "notes",
-    "status",
-    "error",
-]
-
-VALIDATED_CSV_COLUMNS = [
-    "row_index",
-    "token_name",
-    "token_symbol",
-    "token_href",
-    "slug",
-    "founder_people",
-    "related_companies",
-    "foundation_or_orgs",
-    "confidence",
-    "evidence_spans",
-    "notes",
-    "status",
-    "error",
+    "foundation_status",
+    "foundation_evidence_spans",
+    "source_urls",
     "source_labels",
-    "cmc_match_methods",
-    "sentence_risk_flags",
-    "validation_issues",
-    "suggested_confidence_cap",
+    "confidence",
     "needs_manual_review",
-]
-
-REVIEW_QUEUE_COLUMNS = [
-    "row_index",
-    "token_name",
-    "token_symbol",
-    "token_href",
-    "slug",
-    "confidence",
-    "review_priority",
-    "review_reason",
-    "source_labels",
-    "cmc_match_methods",
-    "sentence_risk_flags",
-    "validation_issues",
-    "founder_people",
-    "related_companies",
-    "foundation_or_orgs",
-    "evidence_spans",
     "notes",
+    "status",
 ]
 
-VERIFICATION_CSV_COLUMNS = [
-    "row_index",
+VERIFICATION_COLUMNS = [
+    "token_id",
     "token_name",
-    "worker_founder_people",
-    "worker_related_companies",
-    "worker_foundation_or_orgs",
-    "verifier_founder_people",
-    "verifier_related_companies",
-    "verifier_foundation_or_orgs",
+    "worker_founder_status",
+    "worker_related_company_status",
+    "worker_foundation_status",
+    "verifier_founder_status",
+    "verifier_related_company_status",
+    "verifier_foundation_status",
     "verdict",
     "error_type",
     "error_reason",
     "evidence_notes",
     "recommended_action",
+    "corrected_result_row_json",
 ]
 
 SCHEDULE_COLUMNS = [
@@ -97,18 +67,15 @@ SCHEDULE_COLUMNS = [
     "task_count",
     "start_row",
     "end_row",
-    "first_token",
-    "last_token",
+    "start_token_id",
+    "end_token_id",
     "run_dir",
-    "merged_input_csv",
+    "token_master_csv",
+    "prepared_batch_csv",
     "official_evidence_csv",
-    "token_evidence_sentences_csv",
-    "founder_company_tasks_jsonl",
-    "codex_batch_dir",
-    "extracted_results_csv",
-    "validated_results_csv",
-    "review_queue_csv",
-    "agent_packet_jsonl",
+    "entity_sentences_csv",
+    "token_entity_results_csv",
+    "layer3_packet_jsonl",
     "instructions_file",
     "verifier_dir",
     "verification_report_csv",
@@ -120,9 +87,10 @@ SCHEDULE_COLUMNS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare Part4 batch worker run directories with harness schedule and verifier slots.",
+        description="Prepare Part4 batch worker run directories under the new token_id-based harness."
     )
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--token-master-csv", type=Path, default=DEFAULT_TOKEN_MASTER)
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--start-batch", type=int, default=1)
@@ -157,8 +125,7 @@ def batch_number(batch_id: str) -> int:
 
 def load_manifest(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as infile:
-        reader = csv.DictReader(infile)
-        rows = list(reader)
+        rows = list(csv.DictReader(infile))
     if not rows:
         raise SystemExit(f"Manifest has no rows: {path}")
     return rows
@@ -192,6 +159,7 @@ def batch_tokens(batch_path: Path) -> tuple[str, str]:
 
 
 def build_worker_instructions(run_dir: Path, batch_id: str, task_count: int, first_token: str, last_token: str) -> str:
+    prompt_path = PART4_DIR / "scripts" / "4_founder_company_prompt.txt"
     return f"""# Part4 Worker Run
 
 You are processing `{batch_id}` in the Part4 token-to-company harness.
@@ -204,8 +172,8 @@ Exclusive write scope:
 Read first:
 - {PART4_DIR / "Plan.md"}
 - {PART4_DIR / "pipeline.md"}
-- {PART4_DIR / "4_founder_company_prompt.txt"}
-- {run_dir / "merged_input.csv"}
+- {prompt_path}
+- {run_dir / "prepared_batch.csv"}
 
 Task range:
 - batch_id: {batch_id}
@@ -214,21 +182,26 @@ Task range:
 - last_token: {last_token or "-"}
 
 Required workflow:
-1. Run Layer 2 official evidence collection into `official_evidence.csv`.
-2. Run candidate sentence filtering into `token_evidence_sentences.csv`.
-3. Run extraction task building into `founder_company_tasks.jsonl` and `codex_batches/`.
-4. Complete `founder_company_extracted.csv` with exactly one row per input row.
-5. Run validation into `founder_company_validated.csv`.
-6. Run review queue build into `founder_company_review_queue.csv`.
-7. If unresolved rows remain, write `agent_packet.jsonl` for Layer 3 fallback.
+1. Treat `prepared_batch.csv` as the immutable source of truth. Each token is keyed by `token_id`.
+2. Collect official/company evidence into `official_evidence.csv` before using CG/CMC founder text.
+3. Build target-aware evidence sentences into `entity_sentences.csv`.
+4. Produce exactly one row per input token in `token_entity_results.csv`.
+5. Evaluate all three targets for every token:
+   - `founder_people` + `founder_status`
+   - `related_companies` + `related_company_status`
+   - `foundation_or_orgs` + `foundation_status`
+6. Allowed field statuses: `supported`, `unresolved`, `not_applicable`.
+7. If any target remains unresolved, keep the row in `token_entity_results.csv`, set `status=pending_layer3`, and add the token to `layer3_packet.jsonl`.
 8. Spawn a fresh verifier and produce `verification_report.csv` and `verification_summary.md`.
 
-Worker output rules:
-- Keep JSON arrays valid in `founder_people`, `related_companies`, `foundation_or_orgs`, and `evidence_spans`.
-- Use only explicit source evidence from CG, CMC, and collected official paragraphs.
+Hard rules:
+- No token may be dropped because evidence sentences are thin or absent.
+- Official/company evidence has priority for `related_companies` and `foundation_or_orgs`.
+- CG/CMC founder text is supplemental, not the first authority for company/foundation claims.
+- `needs_manual_review` must be `0` or `1`.
 - `confidence` must be one of `high`, `medium`, `low`.
-- `status` should be `completed` for finished rows or `pending_agent` when fallback is still required.
-- Do not leave missing rows. Every input row must have a corresponding result row.
+- `status` must be `completed` or `pending_layer3`.
+- `founder_people`, `related_companies`, `foundation_or_orgs`, `*_evidence_spans`, `source_urls`, `source_labels` must be valid JSON arrays.
 """
 
 
@@ -240,20 +213,22 @@ You are the fresh verifier for `{batch_id}` in the Part4 token-to-company harnes
 Read:
 - {PART4_DIR / "Plan.md"}
 - {PART4_DIR / "pipeline.md"}
-- {run_dir / "merged_input.csv"}
-- {run_dir / "token_evidence_sentences.csv"}
-- {run_dir / "founder_company_validated.csv"}
-- {run_dir / "founder_company_review_queue.csv"}
+- {run_dir / "prepared_batch.csv"}
+- {run_dir / "official_evidence.csv"}
+- {run_dir / "entity_sentences.csv"}
+- {run_dir / "token_entity_results.csv"}
 
-Verifier goals:
-- detect missing founders / related companies / orgs
-- detect over-reported entities
-- detect wrong entity typing
-- flag weak-evidence rows that should remain in review
-- flag rows that should escalate to Layer 3 fallback
+Verifier responsibilities:
+- confirm every `token_id` in `prepared_batch.csv` has exactly one result row
+- check whether `token_type` routing is reasonable
+- check whether `related_company_status` and `foundation_status` were derived from official/company evidence first
+- detect tokens that should have escalated to Layer 3
+- emit authoritative row corrections when the worker row is wrong
 
 Required CSV header for `verification_report.csv`:
-{",".join(VERIFICATION_CSV_COLUMNS)}
+{",".join(VERIFICATION_COLUMNS)}
+
+If `recommended_action = edit_row`, `corrected_result_row_json` must contain a full replacement row using the result schema.
 """
 
 
@@ -263,6 +238,7 @@ def main() -> None:
         raise SystemExit("--workers must be at least 1.")
 
     manifest_path = ensure_file(args.manifest, "Batch manifest")
+    token_master_csv = ensure_file(args.token_master_csv, "Token master CSV")
     runs_dir = args.runs_dir.resolve()
     runs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -280,22 +256,18 @@ def main() -> None:
     schedule_rows: list[dict[str, str]] = []
     for index, row in enumerate(selected_rows):
         batch_id = str(row.get("batch_id") or "").strip()
-        batch_path = ensure_file(Path(str(row.get("batch_path") or "").strip()), f"Batch CSV for {batch_id}")
+        batch_path = ensure_file(REPO_ROOT / str(row.get("batch_path") or "").strip(), f"Batch CSV for {batch_id}")
         task_count = int(str(row.get("row_count") or "0").strip() or 0)
         round_index = index // args.workers + 1
         worker_slot = index % args.workers + 1
 
         run_dir = runs_dir / batch_id
         verifier_dir = run_dir / "verification"
-        merged_input_csv = run_dir / "merged_input.csv"
+        prepared_batch_csv = run_dir / "prepared_batch.csv"
         official_evidence_csv = run_dir / "official_evidence.csv"
-        token_evidence_sentences_csv = run_dir / "token_evidence_sentences.csv"
-        founder_company_tasks_jsonl = run_dir / "founder_company_tasks.jsonl"
-        codex_batch_dir = run_dir / "codex_batches"
-        extracted_results_csv = run_dir / "founder_company_extracted.csv"
-        validated_results_csv = run_dir / "founder_company_validated.csv"
-        review_queue_csv = run_dir / "founder_company_review_queue.csv"
-        agent_packet_jsonl = run_dir / "agent_packet.jsonl"
+        entity_sentences_csv = run_dir / "entity_sentences.csv"
+        token_entity_results_csv = run_dir / "token_entity_results.csv"
+        layer3_packet_jsonl = run_dir / "layer3_packet.jsonl"
         instructions_file = run_dir / "instructions.md"
         verification_report_csv = verifier_dir / "verification_report.csv"
         verification_summary_md = verifier_dir / "verification_summary.md"
@@ -303,11 +275,9 @@ def main() -> None:
 
         run_dir.mkdir(parents=True, exist_ok=True)
         verifier_dir.mkdir(parents=True, exist_ok=True)
-        copy_batch_input(batch_path, merged_input_csv, force=args.force)
-        write_header(extracted_results_csv, EXTRACTED_CSV_COLUMNS, args.force)
-        write_header(validated_results_csv, VALIDATED_CSV_COLUMNS, args.force)
-        write_header(review_queue_csv, REVIEW_QUEUE_COLUMNS, args.force)
-        write_header(verification_report_csv, VERIFICATION_CSV_COLUMNS, args.force)
+        copy_batch_input(batch_path, prepared_batch_csv, force=args.force)
+        write_header(token_entity_results_csv, RESULT_COLUMNS, args.force)
+        write_header(verification_report_csv, VERIFICATION_COLUMNS, args.force)
 
         first_token, last_token = batch_tokens(batch_path)
         instructions_file.write_text(
@@ -328,18 +298,15 @@ def main() -> None:
                 "task_count": str(task_count),
                 "start_row": str(row.get("start_row") or ""),
                 "end_row": str(row.get("end_row") or ""),
-                "first_token": first_token,
-                "last_token": last_token,
+                "start_token_id": str(row.get("start_token_id") or ""),
+                "end_token_id": str(row.get("end_token_id") or ""),
                 "run_dir": relative_path(run_dir),
-                "merged_input_csv": relative_path(merged_input_csv),
+                "token_master_csv": relative_path(token_master_csv),
+                "prepared_batch_csv": relative_path(prepared_batch_csv),
                 "official_evidence_csv": relative_path(official_evidence_csv),
-                "token_evidence_sentences_csv": relative_path(token_evidence_sentences_csv),
-                "founder_company_tasks_jsonl": relative_path(founder_company_tasks_jsonl),
-                "codex_batch_dir": relative_path(codex_batch_dir),
-                "extracted_results_csv": relative_path(extracted_results_csv),
-                "validated_results_csv": relative_path(validated_results_csv),
-                "review_queue_csv": relative_path(review_queue_csv),
-                "agent_packet_jsonl": relative_path(agent_packet_jsonl),
+                "entity_sentences_csv": relative_path(entity_sentences_csv),
+                "token_entity_results_csv": relative_path(token_entity_results_csv),
+                "layer3_packet_jsonl": relative_path(layer3_packet_jsonl),
                 "instructions_file": relative_path(instructions_file),
                 "verifier_dir": relative_path(verifier_dir),
                 "verification_report_csv": relative_path(verification_report_csv),

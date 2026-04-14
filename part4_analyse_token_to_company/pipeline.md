@@ -2,422 +2,417 @@
 
 ## 目標
 
-把 token 的 `founder_people`、`related_companies`、`foundation_or_orgs` 做成一條可執行、可擴展、可檢查的三層式 pipeline。
+Part4 的目標不是「抽到一些 founder/company/org 就算完成」。
 
-核心原則：
+新的目標是：
 
-- 先 canonicalize token，再抽取 founder/company
-- 主流程不做全量 agent 廣搜
-- 模型不吃全文，只吃高信號文本
-- `unknown` 優先於猜測
-- 每條結果都必須能回溯到具體 evidence
-
----
-
-## 當前項目結構
-
-### 現有腳本
-
-- [1_merge_coingecko_cmc_about.py](/Users/benlao/Downloads/STANFORD_20260201/part4/1_merge_coingecko_cmc_about.py)
-  - 作用：合併 CoinGecko 與 CoinMarketCap 的 `about_text`
-  - 狀態：已存在
-
-- [4_extract_founder_companies.py](/Users/benlao/Downloads/STANFORD_20260201/part4/4_extract_founder_companies.py)
-  - 作用：把 token 文本打包成批次抽取任務
-  - 狀態：已存在，但目前仍偏向「整段文本直接抽取」
-
-- [4_founder_company_prompt.txt](/Users/benlao/Downloads/STANFORD_20260201/part4/4_founder_company_prompt.txt)
-  - 作用：定義 founder/company/org 抽取規則
-  - 狀態：已存在
-
-- [Plan.md](/Users/benlao/Downloads/STANFORD_20260201/part4/Plan.md)
-  - 作用：總體策略與模型/工具選型
-  - 狀態：已存在
-
-### 建議新增步驟
-
-以下步驟尚未完整落地，建議在 `part4/` 內新增相應腳本或模組：
-
-- `collect_official_evidence`
-  - 從官方網站定向抓取 founder/company 高信號段落
-
-- `filter_candidate_sentences`
-  - 從 `about_text` 和官方段落中切句並保留高信號句
-
-- `build_review_queue`
-  - 對低信心、衝突、特殊 token 自動打入 review queue
-
-- `validate_extraction_results`
-  - 對 founder/company/org 類別混淆、evidence 缺失、confidence 過高等問題做規則校驗
+- 每個 token 都先 canonicalize
+- 每個 token 都生成全域穩定主鍵 `token_id`
+- 每個 token 都先經過 `token_type` router
+- 每個 token 的三個 target 都必須跑完：
+  - `founder_people`
+  - `related_companies`
+  - `foundation_or_orgs`
+- 每個 target 都要有 field-level completeness state
+- 沒有任何 token 可以因為 trigger 沒打中、batch id 錯誤、或 partial output 而被靜默漏掉
 
 ---
 
-## Pipeline 概覽
+## 一、輸入改造
 
-整條線分成：
+### 原則
 
-1. `Preparation`
-2. `Layer 1: CG / CMC Candidate Sentences`
-3. `Layer 2: Official Site Directed Evidence`
-4. `Layer 3: Agent Fallback`
-5. `Post-Processing and QA`
+Part4 的 preparation input 必須改成：
 
-其中真正的三層抽取是 Layer 1 到 Layer 3。
+- CoinGecko token list 和 CoinMarketCap token list 的並集
 
----
+不要再把單一來源的列表當成唯一主表。
 
-## Preparation
+### Preparation 輸入
 
-### 目的
+- CoinGecko token list
+- CoinMarketCap token list
+- CoinGecko about / metadata
+- CoinMarketCap about / metadata
+- website metadata
 
-先把 token canonicalize，並準備好可被三層抽取共用的主表。
+### Preparation 輸出
 
-### 輸入
+- `output/token_master.csv`
 
-- `part4/output/coinmarketcap_list.csv`
-- `part4/output/coingecko_all_crypto_list.csv`
-- `part4/output/coingecko_about.csv`
-- `part4/output/cmc_about_qa.csv`
+### `token_master.csv` 最低欄位
 
-### 現有腳本
-
-- [1_merge_coingecko_cmc_about.py](/Users/benlao/Downloads/STANFORD_20260201/part4/1_merge_coingecko_cmc_about.py)
-
-### 建議輸出
-
-- `part4/output/token_master.csv`
-- `part4/output/token_master_enriched.csv`
-- `part4/output/coingecko_about_with_cmc_about.csv`
-
-### 最低欄位要求
-
+- `token_id`
 - `token_name`
 - `token_symbol`
 - `token_href`
 - `coingecko_slug`
 - `cmc_slug`
-- `match_method`
-- `match_confidence`
-- `about_text`
-- `cmc_about_text`
 - `official_website`
-
-### 匹配順序
-
-1. `slug`
-2. `symbol + normalized token_name`
-3. `exact normalized name`
-
-### Preparation 完成條件
-
-- 每個 token 有穩定的 canonical key
-- 每個 token 至少有一份可抽取文本
-- 若有 CoinGecko `websites`，需補出 `official_website`
+- `token_type`
+- `routing_reason`
+- `cg_about_text`
+- `cmc_about_text`
 
 ---
 
-## Layer 1: CG / CMC Candidate Sentences
+## 二、全域穩定主鍵
+
+### 必須新增 `token_id`
+
+Preparation 階段就生成：
+
+- `token_id`
+
+它是整條線唯一 merge key。
+
+### 規則
+
+- 優先使用已對齊的 `coingecko_slug + cmc_slug`
+- 若只有單邊 slug，就用該 slug + normalized `token_name` + `token_symbol`
+- 若只有名稱與 symbol，仍要生成 deterministic key
+
+### 禁止事項
+
+- 不要用 batch-local `row_index` 當最終主鍵
+- 不要讓 verifier / collector 依賴 batch-local 序號合併
+
+---
+
+## 三、入口新增 token_type router
 
 ### 目的
 
-用最低成本先解掉大部分 founder/company 明確的 token。
+不同 token 類型的 founder / company / foundation 證據不一樣，不能走同一套規則。
 
-### 適用資料
+### 建議類型
 
-- `about_text`
-- `cmc_about_text`
+- `base_asset`
+- `protocol_token`
+- `exchange_token`
+- `fiat_stablecoin`
+- `wrapped_or_bridged`
+- `liquid_staking_or_receipt`
+- `synthetic_or_fund`
+- `meme_or_community`
+- `unknown`
 
-### 模型輸入
+### Router 影響
 
-不要輸入全文。
+router 不是 metadata；它直接決定：
 
-先本地切句，只保留包含以下 trigger 的句子：
+- official evidence 的抓取優先順序
+- 哪些 target 比較可能是 `not_applicable`
+- 哪些 token 必須更嚴格 review
+- Layer 3 fallback 的優先級
+
+### 例子
+
+- `wrapped_or_bridged`：
+  不得直接繼承 underlying token 的 founder/company/foundation
+
+- `liquid_staking_or_receipt`：
+  優先找 operator / issuer / DAO / foundation，不優先找 underlying chain founders
+
+- `fiat_stablecoin`：
+  優先找 issuing entity、trust、consortium、operator、foundation
+
+---
+
+## 四、輸出檔案簡化
+
+目前輸出檔案太多，應合併。
+
+### 最終輸出只保留
+
+- `agent_runs/token_company/token_master.csv`
+- `agent_runs/token_company/token_entity_results.csv`
+- `agent_runs/token_company/token_entity_review_queue.csv`
+- `agent_runs/token_company/verification_findings.csv`
+- `agent_runs/token_company/checkpoint.json`
+
+### batch-local 檔案縮減為
+
+- `prepared_batch.csv`
+- `official_evidence.csv`
+- `entity_sentences.csv`
+- `token_entity_results.csv`
+- `layer3_packet.jsonl` 只有 unresolved token 才有
+- `verification/verification_report.csv`
+- `verification/verification_summary.md`
+
+### 不再保留
+
+- 分離的 `founder_company_extracted.csv`
+- 分離的 `founder_company_validated.csv`
+- 分離的 batch-local review queue
+
+除非只是 debug 暫存，否則不該成為主 contract。
+
+---
+
+## 五、結果 schema 簡化
+
+### 一個 token 一行
+
+`token_entity_results.csv` 建議欄位：
+
+```csv
+token_id,token_name,token_symbol,coingecko_slug,cmc_slug,token_href,official_website,token_type,founder_people,founder_status,founder_evidence_spans,related_companies,related_company_status,related_company_evidence_spans,foundation_or_orgs,foundation_status,foundation_evidence_spans,source_urls,source_labels,confidence,needs_manual_review,notes,status
+```
+
+### 取消不必要欄位
+
+以下欄位不該進 final merged outputs：
+
+- `row_index`
+- `batch_id`
+- `trigger_keyword`
+- `cmc_match_method` 細節列
+- `sentence_risk_flags` 細節列
+- `suggested_confidence_cap`
+- 多個重複 debug 欄位
+
+這些可以留在 verifier findings 或 batch-local debug artefacts，不應污染最終主表。
+
+---
+
+## 六、completeness contract 改成 field-level
+
+### 核心變更
+
+不要再用 row-level completion。
+
+要改成：
+
+- `founder_status`
+- `related_company_status`
+- `foundation_status`
+
+### 允許值
+
+- `supported`
+- `unresolved`
+- `not_applicable`
+
+### 規則
+
+- founder 找到了，不代表 row 就完成
+- company 沒找到，必須明確標 `unresolved` 或 `not_applicable`
+- foundation 沒跑到，不可默默留空
+
+### 例子
+
+某 token：
+
+- `founder_status = supported`
+- `related_company_status = unresolved`
+- `foundation_status = unresolved`
+
+這個 token 仍然必須升級，不可直接視為完成。
+
+---
+
+## 七、流程重排：先 official/company，再 founder 補充
+
+這是本次最重要的流程調整。
+
+### 新順序
+
+1. Preparation: union of CG + CMC lists
+2. Generate `token_id`
+3. Run `token_type` router
+4. Batch from `token_master.csv`
+5. Collect official/company evidence first
+6. Extract official company/foundation/operator/issuer sentences
+7. Add CG/CMC founder-history sentences as supplemental evidence
+8. Run field-level extraction
+9. Run field-level completeness gate
+10. Build Layer 3 packet only for unresolved fields
+11. Fresh verifier
+12. Collector merge
+
+### 為什麼
+
+當前流程容易先從 CG/CMC 抓 founder，再回頭補 official evidence。
+
+這會造成：
+
+- founder 抽得比較完整
+- related_company / foundation 常常缺失
+- partial row 被過早接受
+
+對 `related_companies`、`foundation_or_orgs`，官方 evidence 幾乎總是比 CG/CMC about 更重要。
+
+---
+
+## 八、official evidence 優先級
+
+對 company/foundation 類 target，先抓：
+
+1. homepage 中的 about / company / legal / team / foundation / governance link
+2. docs 子網域
+3. whitepaper / litepaper / faq
+4. blog / announcements
+
+不要只依賴固定 suffix。
+
+### 特別需要抓的頁面
+
+- `/about`
+- `/team`
+- `/foundation`
+- `/governance`
+- `/company`
+- `/legal`
+- `/terms`
+- `/docs`
+- whitepaper PDF
+
+---
+
+## 九、sentence extraction 也要 target-aware
+
+不能再用單一 trigger list。
+
+### founder triggers
 
 - `founder`
 - `co-founder`
-- `founded by`
 - `created by`
 - `invented by`
 - `launched by`
-- `issued by`
-- `developed by`
+
+### related-company triggers
+
+- `issuer`
+- `issuing entity`
+- `operator`
 - `operated by`
+- `developed by`
 - `maintained by`
+- `parent company`
+- `trust company`
+- `legal entity`
+
+### foundation/org triggers
+
 - `foundation`
-- `labs`
 - `dao`
 - `association`
-- `issuer`
-- `parent company`
+- `labs`
+- `governed by`
+- `stewarded by`
 
-### 建議新增步驟
+### hard rule
 
-- `filter_candidate_sentences`
+如果 founder triggers 一條都沒中：
 
-### 模型建議
+- token 仍然要保留
+- company/foundation target 仍然要跑
+- unresolved field 仍然要進 completeness gate
 
-- 效果優先：`OpenAI GPT` + Structured Outputs
-- 平衡方案：`GLM-5`
-- 成本優先 baseline：`DeepSeek-V3.2`
+---
 
-### 預期輸出
+## 十、Layer 3 fallback 要變成真正閉環
 
-- `part4/output/token_evidence_sentences_layer1.csv`
-- `part4/output/founder_company_layer1.csv`
+Layer 3 不應只是 `pending_agent` 狀態。
 
-每列至少包含：
+### Layer 3 packet 必須帶
 
 - `token_id`
-- `source`
-- `sentence`
-- `trigger_keyword`
-- `founder_people`
-- `related_companies`
-- `foundation_or_orgs`
-- `evidence_spans`
-- `confidence`
-- `notes`
-
-### Layer 1 升級到 Layer 2 的條件
-
-符合任一條件就升級：
-
-- `founder_people`、`related_companies`、`foundation_or_orgs` 全空
-- 只有單一弱句支持
-- `confidence = low`
-- 抽到的是 partner / contributor / exchange，但不像 issuer / operator / founder
-- evidence 提到 project，但沒有清楚指向 token 或其直接主體
-
-### Layer 1 校驗
-
-- `founder_people` 不得含公司或基金會名稱
-- `related_companies` 不得直接收 exchange / partner / investor
-- `foundation_or_orgs` 不得混入 `Inc.` / `Ltd.` / `LLC`
-- 每條非空結果都要至少有一條 `evidence_span`
-
----
-
-## Layer 2: Official Site Directed Evidence
-
-### 目的
-
-對 Layer 1 unresolved 的 token，從官方站點補更高 precision 的 founder/company 證據。
-
-### 適用資料
-
-- `official_website`
-- CoinGecko `websites`
-- 官方站點中的定向頁面
-
-### 官方抓取範圍
-
-每個 token 最多抓 3 到 5 頁，優先順序：
-
-1. `/about`
-2. `/team`
-3. `/foundation`
-4. `/docs`
-5. `/whitepaper`
-6. `/litepaper`
-
-### 輸入內容
-
-不是整頁 HTML，也不是整篇 whitepaper。
-
-而是先本地抽出以下高信號段落：
-
-- project history / founding 段落
-- founder / co-founder 個人介紹段落
-- foundation / DAO / association 說明段落
-- issuer / developer / operating entity 說明段落
-
-### 建議新增步驟
-
-- `collect_official_evidence`
-- `filter_candidate_sentences`
-
-### 模型建議
-
-- 主模型仍以 `OpenAI GPT` 或 `GLM-5` 為主
-- 若 Layer 1 用的是低成本模型，Layer 2 建議升級到高 precision 模型
-
-### 預期輸出
-
-- `part4/output/token_official_evidence.csv`
-- `part4/output/token_evidence_sentences_layer2.csv`
-- `part4/output/founder_company_layer2.csv`
-
-### Layer 2 升級到 Layer 3 的條件
-
-符合任一條件就升級：
-
-- 官方頁仍找不到 founder/company/org
-- 官方與 CG/CMC 結論衝突
-- wrapped / bridged / staked token，主體歸屬不清
-- token 很重要，不能接受空值
-- 有 founder 但沒有可確認的 direct company / org，或反之
-
-### Layer 2 校驗
-
-- `high confidence` 必須有官方來源支持
-- 只有 `CG/CMC` 支持的結果最高只能到 `medium`
-- 若官方文本只描述 ecosystem / community，不得直接推出 issuer/company
-
----
-
-## Layer 3: Agent Fallback
-
-### 目的
-
-只處理少量高價值、低信心、或多來源衝突的 token。
-
-### 原則
-
-- 不跑全量
-- 不做 open-ended 廣搜
-- 只處理 review queue 中的 unresolved token
-
-### agent 輸入
-
-必須使用結構化 packet，而不是一句泛問題。
-
-最低輸入字段：
-
+- `token_type`
 - `token_name`
 - `token_symbol`
-- `cmc_slug`
-- `coingecko_slug`
 - `official_website`
-- `CG/CMC 候選句`
-- `官方候選段落`
-- `Layer 1 / Layer 2 中間結果`
-- 明確問題：
-  - `founder_people` 是誰
-  - `related_companies` 是哪些 issuer / developer / operator / parent company
-  - `foundation_or_orgs` 是哪些 foundation / DAO / association / labs
-  - 只接受有明確文字證據的答案
+- official company/foundation evidence
+- CG/CMC founder evidence
+- 目前三個 field 的 status
+- 明確 unresolved fields
 
-### agent / 工具建議
+### Layer 3 輸出
 
-- 工程與研究都在同一環境：`Codex` with web/search tooling
-- 第二選：`Claude` with tool use / web search
-- 中文與國內 agent 工作流：`GLM-5 agent` / `AutoGLM`
+Layer 3 必須回傳完整 replacement row：
 
-### 預期輸出
-
-- `part4/output/founder_company_layer3.csv`
-- `part4/output/agent_review_notes.csv`
-
-### Layer 3 結束條件
-
-符合以下其一即可結束：
-
-- 得到帶 evidence 的 founder/company/org 結果
-- 經多來源檢查後仍無法確認，標記為 `unknown`
-
-### Layer 3 校驗
-
-- agent 結論不得覆蓋現有證據，除非帶來更強來源
-- 所有最終新增結果都必須附 evidence 與 source URL
+- 不是 comment
+- 不是只補一個 founder 名字
+- 而是完整 `token_entity_results` row
 
 ---
 
-## Post-Processing and QA
+## 十一、verifier 要做什麼
 
-### 目的
+Verifier 不只檢查對不對，還要檢查是否完整跑完。
 
-把三層結果合併為最終主表，並建立 review queue。
+### verifier 應檢查
 
-### 最終輸出
+- founder 是否漏報
+- related_company 是否漏報
+- foundation 是否漏報
+- entity type 是否錯
+- `token_type` routing 是否錯
+- 是否有 field 根本沒跑到
+- 是否有 token 應該升級但沒升級
 
-- `part4/output/founder_company_extracted.csv`
-- `part4/output/founder_company_review_queue.csv`
+### verifier output
 
-### 合併優先級
+`verification_report.csv` 建議欄位：
 
-1. 官方來源支持的 Layer 2
-2. 經 agent 補強且有明確 evidence 的 Layer 3
-3. 只有 CG/CMC 支持的 Layer 1
+```csv
+token_id,token_name,worker_founder_status,worker_related_company_status,worker_foundation_status,verifier_founder_status,verifier_related_company_status,verifier_foundation_status,verdict,error_type,error_reason,evidence_notes,recommended_action,corrected_result_row_json
+```
 
-### review queue 進入條件
+如果 `recommended_action = edit_row`：
 
-- 多來源衝突
-- 只有單一來源支持
-- `confidence = low`
-- wrapped / bridged / staked token
-- meme / community token
-- founder / company / org 類別容易混淆
-
-### QA 規則
-
-1. 每條非空結果都必須有 `evidence_span`
-2. `high confidence` 必須有官方來源，或至少雙來源一致
-3. company / org / person 三類不得混填
-4. `related_companies` 只收 issuer / developer / operator / parent company
-5. 找不到明確證據時，一律保留空陣列，不補常識
+- `corrected_result_row_json` 必填
+- collector 可直接 authoritative 套用
 
 ---
 
-## 推薦實作順序
+## 十二、review queue 進入條件要改
 
-### Phase 1
+不是只有 low confidence 或有 issues 才進 queue。
 
-先把現有腳本整理為可重跑的 baseline：
+### 新規則
 
-1. 修正 [4_extract_founder_companies.py](/Users/benlao/Downloads/STANFORD_20260201/part4/4_extract_founder_companies.py) 中的舊檔名與舊提示路徑
-2. 確保 [1_merge_coingecko_cmc_about.py](/Users/benlao/Downloads/STANFORD_20260201/part4/1_merge_coingecko_cmc_about.py) 的輸出表能穩定生成
-3. 新增 `filter_candidate_sentences`
+任一條件成立就進 queue：
 
-### Phase 2
-
-把主流程改成真正的 Layer 1：
-
-1. `merge`
-2. `candidate sentence filter`
-3. `sentence-level extraction`
-4. `rule-based validation`
-
-### Phase 3
-
-補 Layer 2 與 Layer 3：
-
-1. `collect_official_evidence`
-2. 官方段落抽取
-3. unresolved token 才進 agent
-4. 自動生成 review queue
+- `founder_status = unresolved`
+- `related_company_status = unresolved`
+- `foundation_status = unresolved`
+- `token_type` 是 wrapped / bridged / liquid staking / synthetic
+- official company/foundation evidence 缺失
+- verifier 要求 escalation
 
 ---
 
-## 目前已觀察到的兩個實際缺口
+## 十三、Collector 必須保證不靜默漏 token
 
-### 缺口 1：現有抽取腳本仍以整段文本為主
+Collector 需要新增硬規則：
 
-[4_extract_founder_companies.py](/Users/benlao/Downloads/STANFORD_20260201/part4/4_extract_founder_companies.py) 目前仍把 `about_text` / `cmc_about_text` 整段打進 task。
-
-這與 `Plan.md` 的三層設計不一致，因為它還沒有：
-
-- candidate sentence filter
-- sentence-level extraction
-- layer-based escalation
-
-### 缺口 2：輸入與輸出主表尚未完整落地
-
-目前 `part4/output/` 下已看到的是 batch 文件與 batch result，但還沒有完整可重跑的：
-
-- `coingecko_about_with_cmc_about.csv`
-- `token_master.csv`
-- `token_master_enriched.csv`
-- `founder_company_review_queue.csv`
-
-這代表 pipeline 還沒有完全落成為「從原始輸入到最終輸出可重跑的一條線」。
+1. `token_master.csv` 裡的每個 `token_id` 都必須在 merged outputs 出現
+2. 每個 `token_id` 只能有一條最終 row
+3. empty arrays 若沒有對應 field status，直接報錯
+4. unresolved verifier edit 不可 merge
+5. batch-local failure 不可讓 token 靜默消失
 
 ---
 
-## 執行判定摘要
+## 十四、一句話總結新的 Part4
 
-一句話版：
+新的 Part4 不是：
 
-- 先用 `CG/CMC 候選句` 快速解大部分 token
-- 再用 `官方定向抓取` 提高 precision
-- 只有少量 unresolved token 才進 agent
-- 最後用 `validation + review queue` 保證主表品質
+- 先看 about text
+- 抽一輪 founder/company/org
+- 有抽到就算完成
+
+而是：
+
+- 用 CG + CMC 並集建立 `token_master`
+- 先生成 `token_id`
+- 先做 `token_type` routing
+- 先抓 official/company evidence
+- 再補 founder 歷史 evidence
+- 對三個 target 做 field-level completeness
+- unresolved 就升級
+- verifier 與 collector 保證沒有 token 被靜默漏掉

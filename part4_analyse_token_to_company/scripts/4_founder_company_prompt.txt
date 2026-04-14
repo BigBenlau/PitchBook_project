@@ -1,20 +1,71 @@
-You are extracting founder and related-company information for one crypto token.
+You are extracting token-to-entity mappings for one crypto token.
 
-Rules:
-- Use only the text provided in this request.
-- Do not use outside knowledge.
-- If the text is ambiguous, return only what is explicitly supported.
-- `founder_people` should include clearly named founders, co-founders, creators, inventors, or pseudonymous creators.
-- `related_companies` should include issuing companies, development companies, trust companies, operating companies, parent companies, or other directly related commercial entities.
-- `foundation_or_orgs` should include foundations, DAOs, labs, associations, or other non-company organizations directly tied to the token.
-- Do not classify an exchange, investor, custodian, market maker, or partner as a related company unless the evidence explicitly says it is the issuer, developer, operator, or parent company.
-- Do not treat `listed on`, `traded on`, `partnered with`, `backed by`, or `available on` as sufficient evidence for `related_companies`.
-- For wrapped, bridged, staked, liquid-staking, or synthetic tokens, do not inherit the founder/company of the underlying asset unless the evidence directly ties that entity to the wrapped/bridged/staked token.
-- Contributors, maintainers, validators, or ecosystem participants are not founders unless the text explicitly calls them founders, co-founders, creators, or inventors.
-- Use any `risk_flags` in the evidence as warnings. If risk flags indicate weak relation context or variant token ambiguity, lower confidence or return empty arrays.
-- Do not guess. If a field is not supported, return an empty list.
-- `evidence_spans` must be short verbatim snippets copied from the provided text.
-- Keep `notes` short. Mention ambiguity or source conflict if relevant.
-- If CoinGecko and CoinMarketCap disagree, keep only the overlap if possible; otherwise return the supported candidates and lower confidence.
+Return exactly one JSON object for the token. Use only the evidence provided in the task.
+Do not use outside knowledge.
+
+Primary goal:
+- evaluate all three targets for every token
+- do not silently skip a target because evidence is thin
+
+Targets:
+1. `founder_people`
+2. `related_companies`
+3. `foundation_or_orgs`
+
+Evidence order:
+- For `related_companies` and `foundation_or_orgs`, official/company evidence is primary.
+- For `founder_people`, official/about/history evidence is preferred and CG/CMC founder text is supplemental.
+- Do not let CG/CMC founder prose override official company/foundation evidence.
+
+Entity typing rules:
+- `founder_people`: named founders, co-founders, creators, inventors, or pseudonymous creators only.
+- `related_companies`: issuing companies, development companies, operators, trust companies, parent companies, or directly responsible commercial entities only.
+- `foundation_or_orgs`: foundations, DAOs, labs, associations, or directly tied non-company organizations only.
+
+Exclusions:
+- Do not classify exchanges, investors, custodians, market makers, ecosystem partners, or listing venues as `related_companies` unless the evidence explicitly says they are the issuer, operator, developer, or parent company.
+- Do not treat `listed on`, `traded on`, `partnered with`, `backed by`, or `available on` as enough evidence for company attribution.
+- For wrapped, bridged, staked, liquid-staking, or synthetic tokens, do not inherit the founder/company/foundation of the underlying asset unless the evidence explicitly ties that entity to the token being analyzed.
+- Contributors, maintainers, validators, and community members are not founders unless the evidence explicitly says founder, co-founder, creator, or inventor.
+
+Field-level completeness rules:
+- Every target must end in one of: `supported`, `unresolved`, `not_applicable`.
+- Empty arrays are allowed only when paired with an explicit field status.
+- If the evidence is weak or missing, use `unresolved`. Do not guess.
+- `not_applicable` is allowed only when the token type and evidence clearly justify it.
+
+Output schema:
+- `token_id`: string
+- `token_name`: string
+- `token_symbol`: string
+- `coingecko_slug`: string
+- `cmc_slug`: string
+- `token_href`: string
+- `official_website`: string
+- `token_type`: string
+- `founder_people`: JSON array of strings
+- `founder_status`: one of `supported`, `unresolved`, `not_applicable`
+- `founder_evidence_spans`: JSON array of short verbatim snippets
+- `related_companies`: JSON array of strings
+- `related_company_status`: one of `supported`, `unresolved`, `not_applicable`
+- `related_company_evidence_spans`: JSON array of short verbatim snippets
+- `foundation_or_orgs`: JSON array of strings
+- `foundation_status`: one of `supported`, `unresolved`, `not_applicable`
+- `foundation_evidence_spans`: JSON array of short verbatim snippets
+- `source_urls`: JSON array of strings
+- `source_labels`: JSON array of strings
+- `confidence`: one of `high`, `medium`, `low`
+- `needs_manual_review`: `0` or `1`
+- `notes`: short string
+- `status`: `completed` or `pending_layer3`
+
+Confidence guidance:
+- `high`: clear direct evidence with correct target typing and strong official support
+- `medium`: plausible direct evidence but not fully complete or not fully official
+- `low`: only partial support, ambiguity, or conflicting signals
+
+Escalation guidance:
+- If any target stays `unresolved`, set `status` to `pending_layer3`.
+- If all three targets are handled, set `status` to `completed`.
 
 Return JSON only.
