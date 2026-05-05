@@ -25,6 +25,14 @@ Output:
 - `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`
 - `part5_analyse_company_to_token/agent_runs/crypto_company/checkpoint.json`
 
+Final-output authority:
+
+- `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv` is the only final search-result authority.
+- Every company whose search is completed and validated must be merged into that global `results.csv`.
+- Every row with `needs_manual_review = yes` must also be written into `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`.
+- Batch-local run directories, attempt CSVs, round verifier outputs, and rerun windows are intermediate artifacts only. They may be deleted after merge.
+- A round is not operationally complete until validated rows have been promoted into the global final outputs above.
+
 The task is to map each company to zero, one, or multiple crypto projects and fungible token tickers.
 
 The task is not:
@@ -62,10 +70,11 @@ Pipeline:
 11. Before the round ends, spawn a fresh verifier subagent to independently check token correctness for the round.
 12. The verifier reads the classifier/router outputs as part of its review and checks whether each company's `token_ticker` list has omissions, extra tickers, wrong project mapping, or non-fungible/stock ticker contamination.
 13. Main agent reviews the verifier report, fixes rows or marks manual review/rerun decisions.
-14. Collector or coordinator merges verified clean rows into final `results.csv`.
-15. Extract `needs_manual_review.csv`.
-16. Update `checkpoint.json`.
-17. Delete temporary worker run directories after their rows are merged.
+14. Collector or coordinator merges verified clean rows into `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`.
+15. Collector regenerates `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv` from the merged final rows.
+16. Only after that promotion step may the run be treated as complete.
+17. Update checkpoint.
+18. Delete temporary worker run directories after their rows are merged into the global final outputs.
 
 Scripts:
 
@@ -85,8 +94,9 @@ Default model policy:
 
 - Use `gpt-5.4-mini` for high-volume company classification.
 - Use `gpt-5.4-mini` for normal project/token search workers.
+- Keep worker research on `gpt-5.4-mini` even for 30-company batches by rotating fresh segment attempts inside the batch instead of stretching one worker context across the full batch.
 - Use `gpt-5.4-mini` for first-pass round-end verification.
-- Escalate only difficult cases to `gpt-5.4`.
+- Escalate only difficult cases to `gpt-5.4` outside the standard worker path. The default worker path remains `gpt-5.4-mini`.
 - Use `gpt-5.3-codex` for harness code, script edits, prompt-template edits, collector changes, and debugging, not for routine company/token research.
 
 Reasoning effort:
@@ -95,10 +105,11 @@ Reasoning effort:
 - Normal project/token search: `gpt-5.4-mini`, `medium`.
 - Ambiguous project/token search: `gpt-5.4-mini`, `high`.
 - Round-end verifier: `gpt-5.4-mini`, `high`.
-- Escalation verifier or rerun: `gpt-5.4`, `high`.
+- Escalation verifier: `gpt-5.4`, `high`.
+- Worker rerun with fresh segment handoff: `gpt-5.4-mini`, `high` or `xhigh`.
 - Harness engineering and code changes: `gpt-5.3-codex`, `medium` or `high` depending on complexity.
 
-Escalate from `gpt-5.4-mini` to `gpt-5.4` when any of these are true:
+Escalate from `gpt-5.4-mini` to `gpt-5.4` when any of these are true in verifier or manual escalation paths:
 
 - verifier and worker disagree on token tickers
 - project has multiple brands, former names, foundations, DAOs, or acquired entities
@@ -110,8 +121,9 @@ Escalate from `gpt-5.4-mini` to `gpt-5.4` when any of these are true:
 Do not use `gpt-5.4` for every row by default. The expected workload is 17,000+ companies, so the cost-effective path is:
 
 1. broad pass with `gpt-5.4-mini`
-2. mandatory fresh verifier with `gpt-5.4-mini`
-3. targeted reruns/escalations with `gpt-5.4`
+2. batch-internal segment rotation with fresh `gpt-5.4-mini` workers
+3. mandatory fresh verifier with `gpt-5.4-mini`
+4. targeted verifier/manual escalations with `gpt-5.4`
 
 Do not use `gpt-5.3-codex` as the default research worker unless the task includes substantial repo editing, script execution, or long-running coding-agent behavior. For token research, its coding optimization and higher output cost make it less cost-effective than `gpt-5.4-mini`.
 
@@ -243,6 +255,24 @@ Allowed `search_tier` values:
 - `light`
 - `skip_candidate`
 
+Allowed `company_type` values:
+
+- `protocol_or_network`
+- `dapp_or_product`
+- `exchange_or_broker`
+- `wallet_or_custody`
+- `mining_or_validator`
+- `infrastructure_or_data`
+- `security_or_compliance`
+- `service_provider`
+- `investment_or_holdings`
+- `media_or_education`
+- `gaming_or_nft`
+- `traditional_business`
+- `unclear`
+
+Do not invent finer-grained `company_type` labels in outputs. If a company looks like `defi_protocol`, `nft_marketplace`, `gaming_platform`, `crypto_brokerage_platform`, or similar, map it back to the nearest allowed value above.
+
 Use `search_tier = full` when any of these are true:
 
 - the company appears to operate a protocol, network, dapp, exchange, wallet, tokenized product, or blockchain-native product
@@ -255,6 +285,8 @@ Use `search_tier = light` when the company is crypto-adjacent or low-likelihood 
 - service provider, infrastructure, media, mining, validator, custody, analytics, security, compliance, NFT, gaming, or investment-related company with some crypto/project context
 - official domain, aliases, former names, or description contain token/project-like terms, but the row does not justify a full deep search
 - source context is thin, ambiguous, or likely stale
+- the company is crypto-native infrastructure, validator, node, relayer, builder, MEV, rollup, or chain tooling with clear protocol-facing product context but no immediate token evidence
+- the row already contains rewards, governance, staking, tokenomics, wrapper, bridge, or liquid-staked language, but the first pass has not yet confirmed a stable ticker
 
 Use `search_tier = skip_candidate` only when the company is clearly out of scope for fungible token mapping and even a lightweight token-existence check is not justified, for example:
 
@@ -285,8 +317,10 @@ Conservative rule:
 
 - If the classifier/router is unsure, use `search_tier = full`.
 - If token usage is a concern but project/token relevance cannot be excluded, use `search_tier = light`, not `skip_candidate`.
+- Crypto-native infrastructure or protocol-facing operations must not be routed to `skip_candidate` only because no token is obvious from the first read; these rows require at least `light`.
 - `skip_candidate` requires a clear `classifier_reason` grounded in company type and source row context.
 - The classifier/router must keep `classifier_reason` short. Do not spend tokens writing long explanations.
+- former-name continuity, token-family sweep, and secondary-only linkage are fixed follow-up rules, not optional verifier cleanups.
 
 ## 5. Stage 2: Project/Token Search Worker
 
@@ -303,9 +337,15 @@ Worker constraints:
 - Read only its assigned `tasks.jsonl` / batch JSONL.
 - Write only its assigned run directory.
 - Write exactly one row per task.
+- Write rows incrementally instead of dumping the full batch only at the end.
+- A healthy worker should create its first classifier/result rows early; if both CSVs stay header-only for 60-90 seconds, the harness should treat that as a startup failure.
 - Do not modify final result files directly.
 - Do not modify another worker's run directory.
 - Do not rewrite source batches or input dataset.
+- Every batch should use a fresh worker subagent. Do not reuse a completed worker context for a later batch.
+- The runtime architecture should treat each batch as a state machine with isolated attempts. A respawn must create a new attempt directory instead of reusing the same mutable CSV files.
+- The active schedule should point only to the active attempt for each batch; older attempts remain for debugging but are not authoritative for lint, verifier, or merge.
+- Each batch should keep one stable `base_worker_instructions.md`; every attempt-specific `worker_instructions.md` should be rendered fresh from that base instead of wrapping the previous attempt instructions recursively.
 
 Full search policy:
 
@@ -314,6 +354,9 @@ Full search policy:
 - Use search to identify the correct company, project, product, protocol, and token mapping.
 - Prefer primary sources when available, but allow reputable secondary sources for discovery and corroboration.
 - Search depth should be proportional to classifier likelihood and ambiguity.
+- Do not close a row as skipped or no-token until former-name / alias / rebrand continuity has been checked.
+- If docs mention governance, staking, wrapper, liquid-staked, bridge, reward token, or tokenomics language, run a token-family sweep before closing the row.
+- If a token is supported only by secondary token pages, run one extra company/project linkage pass; if it remains secondary-only, keep `needs_manual_review = yes` or keep `token_ticker = []`.
 
 Light search policy:
 
@@ -321,7 +364,8 @@ Light search policy:
 - Use exact names, aliases, former names, and normalized domain before broad discovery queries.
 - Prefer official site/domain and exact-match token data pages.
 - Do not browse broadly through generic secondary sources unless the first-pass evidence shows a possible owned project or token.
-- If the light check finds a plausible token or project signal, upgrade the row to full search or mark `needs_manual_review = yes` if the round budget cannot support a full rerun.
+- If the light check finds a plausible token or project signal, upgrade the row to full search in the same run.
+- Do not use `needs_manual_review = yes` as a substitute for completing the full search.
 
 Light query playbook:
 
@@ -334,7 +378,7 @@ Light query playbook:
 Light-tier requirements:
 
 - before finalizing `token_ticker = []`, run the exact-domain token probe
-- if any probe produces a plausible company -> project -> token signal, reroute to `full` or mark `needs_manual_review = yes`
+- if any probe produces a plausible company -> project -> token signal, reroute to `full`
 - do not treat light search as a vague skim; it is a fixed low-cost probe sequence
 
 Full query playbook:
@@ -389,8 +433,8 @@ Column rules:
 - `token_name`: JSON list string
 - `token_url`: JSON list string
 - `has_token_evidence`: short evidence summary
-- `evidence_urls`: `|`-separated URLs
-- `evidence_source_types`: `|`-separated source type labels
+- `evidence_urls`: `|`-separated absolute HTTP(S) URLs
+- `evidence_source_types`: `|`-separated lowercase source type labels
 - `confidence`: `high`, `medium`, or `low`
 - `needs_manual_review`: `yes` or `no`
 
@@ -401,6 +445,10 @@ Confidence and review are separate decisions:
 - `confidence = low`: evidence is weak, thin, or incomplete
 - `needs_manual_review` must not be derived from `confidence` alone
 - `medium` confidence rows may still merge with `needs_manual_review = no` when the mapping is stable and verifier review is clean
+- `has_token_evidence` must never be blank
+- searched rows must not use bare `yes` or `no` in `has_token_evidence`; they must summarize the positive or negative finding
+- `project_search_required = yes` rows must have non-empty `evidence_urls` and `evidence_source_types`
+- token-positive rows must have both `evidence_urls` and `evidence_source_types`
 
 No-token or skipped-search case:
 
@@ -454,6 +502,23 @@ When sources conflict:
 - otherwise set `needs_manual_review = yes`
 - do not invent a ticker to resolve conflict
 
+Resolution pass before manual review:
+
+- Before setting `needs_manual_review = yes`, run an extra resolution pass unless an external blocker makes search impossible.
+- Current-official pass: re-check official site, docs, blog, FAQ, announcements, foundation pages, GitHub, and explorer references for the current brand, current project name, and current active ticker.
+- Identity-resolution pass: re-check aliases, former names, legal name, parent/subsidiary/acquired brand relationships, and project rebrands.
+- Token-data corroboration pass: use exact project names on CoinGecko, CoinMarketCap, explorer, exchange, or docs pages to confirm or reject the company -> project -> token mapping.
+- Negative-resolution pass: for no-token rows, confirm that current official materials do not identify a company-owned fungible token and that exact major token-page probes do not produce a stable mapping.
+- Only keep `needs_manual_review = yes` when ambiguity remains unresolved after the resolution pass.
+
+Cases that usually should resolve to `needs_manual_review = no` after the resolution pass:
+
+- no-token rows where full search plus the resolution pass still finds no company-owned fungible token
+- web3, tokenized-asset, NFT, or gaming language without a reliable fungible ticker after full search
+- current official docs resolve a rename or migration and at least one current corroborating source supports the active ticker
+- brand/domain mismatch explained by a stable rebrand, former name, acquisition, subsidiary, or owned project relationship
+- thin official site, but enough current docs, foundation, explorer, or token-data evidence exists to complete the mapping
+
 When no reliable source confirms a fungible token:
 
 - use `token_ticker = []`
@@ -462,7 +527,7 @@ When no reliable source confirms a fungible token:
 
 ## 8. Manual Review Rules
 
-Set `needs_manual_review = yes` when any of these are true:
+Set `needs_manual_review = yes` only when one of these is still true after the resolution pass:
 
 - classifier decision is uncertain but project search was skipped
 - company-to-project mapping is ambiguous
@@ -476,6 +541,13 @@ Set `needs_manual_review = yes` when any of these are true:
 
 Do not set `needs_manual_review = yes` only because `confidence` is `medium` or `low`.
 Use manual review only for unresolved ambiguity, unresolved evidence gaps, or unresolved verifier concerns.
+
+These cases usually should not stay in manual review:
+
+- no-token rows with a completed full search and no remaining plausible owned fungible ticker
+- rows where the only issue is crypto-adjacent or tokenized-product language but no token can be mapped
+- rows where former names, aliases, or brand/domain mismatch were resolved by current sources
+- rename / migration cases with a stable current active ticker backed by current corroboration
 
 Manual review rows are not failures. They are the audit queue:
 
@@ -517,7 +589,7 @@ Verifier output:
 - `verification_report.csv`
 - `verification_summary.md`
 
-Store verifier outputs in the current round run directory. If temporary run directories are deleted after merge, preserve the verifier summary or copy verifier reports into the final audit location before deletion.
+Do not create a new top-level run folder for every round. Reuse one working runs directory, keep verifier outputs as round-specific files in that shared working directory, merge the round into the authoritative final tables, then delete the temporary per-batch/per-round artifacts unless the user asks to keep them.
 
 `verification_report.csv` should include:
 
@@ -607,10 +679,21 @@ Resume rule:
 
 After merging a run:
 
+- sync all validated rows into `agent_runs/crypto_company/results.csv`
 - update checkpoint
-- regenerate `needs_manual_review.csv`
+- regenerate `agent_runs/crypto_company/needs_manual_review.csv`
 - preserve or summarize verifier reports for audit
-- delete temporary worker run directories unless the user asks to keep them for audit
+- delete temporary worker run directories and round-specific verifier files unless the user asks to keep them for audit
+
+
+## Runtime Strategy Layer
+
+The authoritative runtime strategy layer lives in `part5_analyse_company_to_token/runtime/`:
+
+- `policy.json`: controller statuses, failure taxonomy, timeouts, escalation, and cleanup globs
+- `worker_base_template.md`: canonical worker base prompt; prepare and controller both render from this file
+- `ARCHITECTURE.md`: ownership model, state machine, attempt layout, and main-agent execution order
+- `README.md`: short index for the strategy-layer files
 
 ## 11. Validation Gates
 
@@ -618,8 +701,58 @@ Validation must happen before rows are merged into final results.
 
 Structural checks:
 
+- the codebase now has 2 scheduler paths:
+  - blocking / fallback round mode: `python part5_analyse_company_to_token/scripts/5_run_round_supervisor.py --runs-dir part5_analyse_company_to_token/agent_runs/crypto_company_parallel --start-round-index <ROUND_INDEX> --round-count <ROUND_COUNT>`
+  - unattended longrun entrypoint: `python part5_analyse_company_to_token/scripts/6_start_long_running_supervisor.py`
+- unattended longrun should go through `6_start_long_running_supervisor.py`, not ad hoc prepare / launch / watch loops in the main agent.
+- the launcher supports `--scheduler-mode round|queue`; the flag default is still `round` for backward compatibility, but the current active backlog path is `queue`.
+- queue mode keeps slots full across the whole target window instead of waiting for a full round barrier before launching more work.
+- queue-mode execution order is:
+  - prepare batch-scoped launch rows with `4_manage_round_runtime.py --prepare-launches`
+  - spawn only selected launch rows
+  - mark only those selected batches started
+  - watch / reconcile running attempts
+  - move completed batches into a serialized collect lane
+  - keep filling free slots while ordinary waiting work exists
+- round indices still exist in `schedule.csv`, verifier artifacts, and reporting, but they are metadata in queue mode rather than the primary execution barrier.
+- after repeated runtime/lint failure loops on the same batch, the supervisor should promote that batch into `split_batch_2x15`: relaunch it as 2 fresh shard workers over 15 companies each, then merge shard outputs back into one authoritative batch result instead of directly writing manual-fallback rows
+- the long-running launcher must auto-detect the next missing batch window from `agent_runs/crypto_company/results.csv`, prepare the next window, prefer launching the supervisor through `systemd-run --user`, fall back to detached `nohup` only if `systemd-run` fails, and write PID / run_dir / `unit_name` / log metadata to `part5_analyse_company_to_token/agent_runs/crypto_company_longrun_latest.json`.
+- the long-running launcher and supervisor must pass the resolved absolute `codex` binary path into worker launches; do not rely on PATH lookup inside systemd user services.
+- do not keep unattended supervisors inside an interactive PTY session. If the main agent needs a background longrun, it should delegate only to `6_start_long_running_supervisor.py`; otherwise a session exit can leave orphan worker processes and a frozen `schedule.csv`.
+- if `5_run_round_supervisor.py` exits by uncaught exception or non-zero terminal failure, it must record that terminal condition into `supervisor_events.log` and `supervisor_state.json` instead of failing silently.
+- in longrun mode, each batch has a fixed wall-clock budget of 2 hours by default.
+- current queue-mode long-tail rule is two-stage, not immediate terminal defer:
+  - first timeout: terminate active workers, preserve the partial prefix, and park the batch as `status=needs_rerun`, `queue_state=tail_retry_pending`, `tail_retry_pending=yes`, `tail_retry_count += 1`
+  - parked tail retries must not re-enter the ordinary waiting queue immediately
+  - parked tail retries are only eligible to relaunch after the normal waiting queue and the collect queue are both empty
+  - with the current policy `DEFAULT_MAX_TAIL_RETRIES = 1`, the next timeout becomes terminal `deferred_long_tail`
+- terminal `deferred_long_tail` batches count as operationally resolved for the current window so the remaining work can finish, but they remain explicit unfinished backlog.
+- queue-mode collect is batch-scoped and serialized: completed batches can be merged into the global final outputs before their same-round peers finish, while `deferred_long_tail` batches are excluded from collect scope.
+- when the user asks for “continue 10 rounds” or any equivalent long-running continuation request and explicitly accepts multi-hour background execution, the main agent should prefer the detached launcher instead of trying to stay inside the same interactive turn until completion.
+- for status checks on the latest long-running job, use `python part5_analyse_company_to_token/scripts/7_check_longrun_status.py` as the default read-only entrypoint instead of manually opening multiple logs.
+- when the user says “檢查 longrun 狀態” or equivalent, the main agent should run `7_check_longrun_status.py`, first query `systemctl --user` if `crypto_company_longrun_latest.json` includes a `unit_name`, then report `status / phase / active_workers / round_summaries`, and in queue mode also include the live slot view plus `waiting_queue / tail_retry_queue / collect_queue / deferred_queue` when present.
+- the longrun status check should also include a host-process scan equivalent to `ps -ef | grep part5`, and use it as a secondary signal alongside heartbeat so the checker does not misclassify a still-running supervisor as stopped merely because current-context PID visibility is incomplete.
+- do not launch workers directly from static schedule rows. First run the runtime controller to build a launch queue for the round: `python part5_analyse_company_to_token/scripts/4_manage_round_runtime.py --runs-dir part5_analyse_company_to_token/agent_runs/crypto_company_parallel --round-index <ROUND_INDEX> --prepare-launches`
+- the runtime controller should upgrade legacy batch folders into isolated attempt directories and rewrite schedule.csv so the active paths point to the active attempt only
+- after spawning workers from the launch queue, mark the round as started: `python part5_analyse_company_to_token/scripts/4_manage_round_runtime.py --runs-dir part5_analyse_company_to_token/agent_runs/crypto_company_parallel --round-index <ROUND_INDEX> --mark-round-started`
+- while the round is running, use the runtime controller instead of ad hoc watcher commands: `python part5_analyse_company_to_token/scripts/4_manage_round_runtime.py --runs-dir part5_analyse_company_to_token/agent_runs/crypto_company_parallel --round-index <ROUND_INDEX> --watch-round --startup-no-row-timeout-seconds 480 --partial-stall-timeout-seconds 240`
+- the runtime controller should detect two distinct failure modes:
+  - startup no-row failure: both CSVs remain header-only after worker start
+  - partial stall: a batch writes an initial prefix but row counts stop increasing for too long
+- startup failures and partial stalls should not reuse the same mutable CSV files. Recovery must create a fresh attempt directory and switch schedule.csv to that attempt before the next launch
+- runtime controller artifacts should be written to `launch_queue_round_XXXX.csv` / `launch_queue_round_XXXX.md` and `runtime_actions_round_XXXX.csv` / `runtime_actions_round_XXXX.md`
+- all runtime-side `schedule.csv` writes must go through the shared locked atomic writer in `scripts/part5_schedule_io.py`; do not rewrite the live schedule directly with a raw `open(..., "w")` path.
+- model escalation should be policy-driven instead of ad hoc: repeated startup failures should escalate model tier, and repeated partial stalls should escalate further or switch to continuation attempts
+- before verifier, run local lint with `python part5_analyse_company_to_token/scripts/3_collect_results.py --runs-dir part5_analyse_company_to_token/agent_runs/crypto_company_parallel --lint-only --fail-on-identity-drift`
+- preferred pre-verifier lint command is `python part5_analyse_company_to_token/scripts/3_collect_results.py --runs-dir part5_analyse_company_to_token/agent_runs/crypto_company_parallel --lint-only --repair-identity-drift-in-place --fail-on-identity-drift`
 - classifier results CSV header exactly matches the classifier/router schema
 - classifier results row count equals expected task count for the completed range
+- `task_index`, `company_id`, `company_name`, and `normalized_domain` are immutable identity fields sourced from `tasks.jsonl`
+- workers must copy immutable identity fields verbatim from `tasks.jsonl`; they are read-only output fields, not research fields
+- any immutable identity drift is a run-blocking lint failure unless the operator explicitly chooses partial recovery
+- collector must canonicalize immutable identity fields from `tasks.jsonl` and report any overrides as an operational warning and debugging signal
+- lint should auto-mark `needs_rerun` in `schedule.csv` when it detects empty-header outputs, header mismatch, row-count mismatch, row-order mismatch, or severe schema failure density within a batch
+- auto-marked lint reruns should be written to `lint_rerun_batches.csv` / `lint_rerun_batches.md` inside the shared runs dir
 - every classifier result has one allowed `search_tier`
 - classifier `risk_flags` parses as a JSON list string
 - classifier `project_search_required` matches `search_tier`: `yes` for `full` or `light`, `no` for `skip_candidate`
@@ -639,6 +772,11 @@ Evidence checks:
 
 - if `token_ticker != []`, then `token_url` or `evidence_urls` must be non-empty
 - `evidence_source_types` must identify the source categories used
+- `has_token_evidence` must be non-empty for every row
+- searched rows must have non-empty `evidence_urls` and `evidence_source_types`
+- searched rows must not use bare `yes` or `no` in `has_token_evidence`
+- `evidence_urls` must contain only absolute HTTP(S) URLs separated by `|`
+- `evidence_source_types` must use lowercase underscore labels separated by `|`
 - token-positive rows must have evidence that maps company/project to token
 - stock ticker must not be used as crypto token evidence
 - list-valued token fields should align by index where possible
@@ -679,23 +817,25 @@ Quality checks:
 
 ## 12. Accuracy Review After a Run
 
-After each round, before checkpoint update or round closure:
+After each completed scope, before checkpoint update or terminal closure:
 
-1. Run collector validation.
-2. Confirm `classifier_results.csv` exists and covers every task in the round.
-3. Confirm classifier `search_tier` and `project_search_required` values are consistent.
-4. Confirm JSON list parse failures are zero.
-5. Confirm row count increased by expected count.
-6. Confirm no duplicate task indexes.
-7. Spawn a fresh verifier subagent for the round.
-8. Verify missing, extra, and wrongly mapped `token_ticker` values.
-9. Resolve every verifier non-`pass` row by editing, rerunning, or marking manual review.
-10. Inspect all `needs_manual_review = yes` rows.
-11. Spot-check a sample of token-positive rows.
-12. Spot-check a sample of `token_ticker = []` rows.
-13. Spot-check skipped-search rows.
-14. Update checkpoint only after verification is complete.
-15. Remove temporary run directories only after verification is complete.
+1. Build launch rows with the runtime controller; in queue mode this is done batch-scoped inside the target rounds, not only as one whole-round barrier.
+2. Spawn workers only from those launch rows and mark only the selected batches started.
+3. While execution is live, let the runtime controller and supervisor detect startup no-row failures, dead workers, partial stalls, split-recovery promotion, and queue-state transitions.
+4. If runtime or lint marks a batch `needs_rerun`, rerun `--prepare-launches` only for that affected batch scope and relaunch only that affected work.
+5. In queue mode, completed batches enter the collect lane as soon as they are ready; they do not wait for all same-round peers to finish.
+6. If a batch hits the first long-tail timeout, park it as `tail_retry_pending` and do not relaunch it until ordinary waiting work and collect work are both empty.
+7. If that same batch times out again after the parked retry, mark it terminal `deferred_long_tail`.
+8. Run the local worker-output lint pass before final merge of the affected completed batches.
+9. Confirm the authoritative attempt outputs cover every task in the completed or shard-completed scope being merged.
+10. Confirm classifier `search_tier` and `project_search_required` values are consistent.
+11. Confirm JSON list parse failures are zero, row counts are correct, and there are no duplicate task indexes.
+12. Run verifier / collector resolution for the completed scope, then resolve every non-`pass` finding by edit, rerun, or manual review before those rows remain in final outputs.
+13. Spot-check a sample of token-positive rows.
+14. Spot-check a sample of `token_ticker = []` rows.
+15. Spot-check skipped-search rows.
+16. Update checkpoint only after verification is complete.
+17. Remove temporary run directories only after verification is complete.
 
 Suggested sample checks:
 
@@ -745,14 +885,26 @@ If the verifier finds missing or extra token tickers:
 
 ## 14. Current Operating State
 
-As of the latest completed run:
+As of the current folder state:
 
+- authoritative batch directory: `part5_analyse_company_to_token/agent_task_batches/crypto_company`
+- generated input rows: `17837`
+- generated batch files: `595`
 - classifier result path: `part5_analyse_company_to_token/agent_runs/crypto_company/classifier_results.csv`
 - final result path: `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`
 - manual review path: `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`
+- verification findings path: `part5_analyse_company_to_token/agent_runs/crypto_company/verification_findings.csv`
 - checkpoint path: `part5_analyse_company_to_token/agent_runs/crypto_company/checkpoint.json`
-- resume from the batch recorded in `checkpoint.json`
+- merged completed rows: `0`
+- next batch to process: `batch_0001`
 
-Do not infer current progress from temporary worker folders. Temporary folders may be deleted after merge.
+Current interpretation rules:
 
-Existing pre-v2 results should be treated as legacy output. Before running new batches under this plan, update `agent_prompt_template.md`, worker instructions, and collector validation to the v2 schema.
+- Treat `agent_runs/crypto_company/` as the only final-output authority for the next run.
+- Treat `agent_runs/crypto_company/results.csv` as the durable source of truth for completed search results.
+- Treat `agent_runs/crypto_company/needs_manual_review.csv` as the durable source of truth for unresolved manual-confirm rows.
+- Treat `agent_task_batches/crypto_company/` as the only authoritative batch source for the next run.
+- `part5_analyse_company_to_token/agent_task_batches/crypto_company_batch_0001_v2` is a legacy snapshot and must not be used as resume authority.
+- Do not infer current progress from temporary worker folders. Temporary folders may be deleted after merge.
+
+Existing pre-v2 or legacy batch artifacts should be treated as historical output only. Run the next round from the current batch directory and current checkpoint state.

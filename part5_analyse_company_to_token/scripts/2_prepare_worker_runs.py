@@ -5,12 +5,16 @@ import argparse
 import csv
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PART5_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART5_DIR.parent
+RUNTIME_DIR = PART5_DIR / "runtime"
+WORKER_BASE_TEMPLATE_PATH = RUNTIME_DIR / "worker_base_template.md"
+DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
 
 DEFAULT_BATCH_DIR = PART5_DIR / "agent_task_batches" / "crypto_company"
 DEFAULT_RUNS_DIR = PART5_DIR / "agent_runs" / "crypto_company_parallel"
@@ -71,6 +75,14 @@ VERIFICATION_CSV_COLUMNS = [
 SCHEDULE_COLUMNS = [
     "round_index",
     "worker_slot",
+    "slot_id",
+    "queue_order",
+    "queue_state",
+    "collect_state",
+    "ready_to_collect_at",
+    "collected_at",
+    "last_collected_attempt_index",
+    "collect_failure_reason",
     "batch_file",
     "task_count",
     "first_task_index",
@@ -79,14 +91,42 @@ SCHEDULE_COLUMNS = [
     "last_company",
     "run_dir",
     "tasks_file",
+    "base_instructions_file",
+    "attempts_dir",
+    "active_attempt",
+    "attempt_index",
+    "attempt_metadata_file",
+    "current_attempt_mode",
     "classifier_results_csv",
     "results_csv",
     "instructions_file",
+    "active_lease_file",
+    "lease_id",
+    "attempt_start_prefix_rows",
+    "planned_rotate",
+    "segment_target_rows",
+    "segment_hard_cap_rows",
+    "prepared_mode",
+    "prepared_reason",
+    "last_failure_type",
+    "failure_counts_json",
+    "consecutive_no_progress_attempts",
     "verifier_dir",
     "verification_report_csv",
     "verification_summary_md",
     "verifier_instructions_file",
     "status",
+    "respawn_count",
+    "last_rerun_reason",
+    "last_rerun_at",
+    "started_at",
+    "first_row_at",
+    "last_progress_at",
+    "last_seen_classifier_rows",
+    "last_seen_result_rows",
+    "startup_failure_count",
+    "stall_failure_count",
+    "escalation_level",
 ]
 
 
@@ -149,6 +189,47 @@ def relative_path(path: Path) -> str:
         return str(resolved)
 
 
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict:
+    with path.open("r", encoding="utf-8") as infile:
+        return json.load(infile)
+
+
+def load_segment_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, int]:
+    raw = load_policy(path).get("segment_policy") or {}
+    target_rows = int(raw.get("target_rows_per_attempt", 12))
+    hard_cap_rows = int(raw.get("hard_cap_rows_per_attempt", 15))
+    if target_rows <= 0:
+        target_rows = 12
+    if hard_cap_rows < target_rows:
+        hard_cap_rows = target_rows
+    return {
+        "target_rows_per_attempt": target_rows,
+        "hard_cap_rows_per_attempt": hard_cap_rows,
+    }
+
+
+def make_lease_id(worker_slot: int, attempt_index: int) -> str:
+    timestamp = now_utc().strftime("%Y%m%dT%H%M%S%fZ")
+    return f"slot{worker_slot:02d}-attempt{attempt_index:04d}-{timestamp}"
+
+
+def attempt_metadata_path(attempt_dir: Path) -> Path:
+    return attempt_dir / "attempt_metadata.json"
+
+
+def active_lease_path(run_dir: Path) -> Path:
+    return run_dir / "active_attempt_lease.json"
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def batch_number(path: Path) -> int:
     stem = path.stem
     try:
@@ -209,7 +290,45 @@ def write_verification_header(path: Path, force: bool) -> None:
         writer.writerow(VERIFICATION_CSV_COLUMNS)
 
 
-def build_worker_instructions(
+def build_initial_attempt_instructions(
+    *,
+    base_instruction_text: str,
+    attempt_dir: Path,
+    tasks_path: Path,
+    active_lease_file: Path,
+    lease_id: str,
+    segment_target_rows: int,
+    segment_hard_cap_rows: int,
+) -> str:
+    return (
+        "# Attempt Runtime Wrapper\n\n"
+        "- attempt_mode: fresh_full_batch\n"
+        f"- attempt_dir: {attempt_dir}\n"
+        f"- authoritative write scope: {attempt_dir}\n"
+        f"- authoritative classifier CSV: {attempt_dir / 'classifier_results.csv'}\n"
+        f"- authoritative results CSV: {attempt_dir / 'results.csv'}\n"
+        f"- authoritative tasks file: {tasks_path}\n"
+        f"- active lease file: {active_lease_file}\n"
+        f"- required lease_id: {lease_id}\n"
+        "- Ignore older attempt directories and older CSV locations.\n"
+        "- This is the default full-batch attempt. Start from the first task and write rows in order.\n"
+        "- Own the entire batch in this single fresh worker and continue until the batch is complete or an explicit blocker is reached.\n"
+        "- Do not proactively hand off or segment the batch in this normal mode.\n"
+        "- Recovery-only segment settings exist for later reruns, but they do not apply to this initial full-batch attempt.\n"
+        "- Write incrementally. Append rows as soon as each company is completed.\n"
+        "- The harness watches startup no-row and partial-stall conditions. Lack of row growth may cause this attempt to be terminated.\n\n"
+        "--- BEGIN BASE INSTRUCTIONS ---\n\n"
+        f"{base_instruction_text.rstrip()}\n\n"
+        "--- END BASE INSTRUCTIONS ---\n"
+    )
+
+
+def load_worker_base_template() -> str:
+    return WORKER_BASE_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def render_worker_base_instructions(
+    *,
     batch_file: Path,
     run_dir: Path,
     tasks: list[dict],
@@ -218,72 +337,63 @@ def build_worker_instructions(
 ) -> str:
     first = tasks[0]
     last = tasks[-1]
-    return f"""# Part5 Worker Run
+    mapping = {
+        "WORKER_SLOT": str(worker_slot),
+        "ROUND_INDEX": str(round_index),
+        "RUN_DIR": str(run_dir),
+        "RUNTIME_ARCHITECTURE": str(RUNTIME_DIR / "ARCHITECTURE.md"),
+        "RUNTIME_POLICY": str(RUNTIME_DIR / "policy.json"),
+        "PLAN_MD": str(PART5_DIR / "Plan.md"),
+        "BATCH_FILE": str(batch_file),
+        "TASKS_FILE": str(run_dir / "tasks.jsonl"),
+        "PROMPT_TEMPLATE": str(PART5_DIR / "agent_prompt_template.md"),
+        "BATCH_FILE_NAME": batch_file.name,
+        "TASK_COUNT": str(len(tasks)),
+        "FIRST_TASK_INDEX": str(first.get("task_index", "")),
+        "FIRST_COMPANY": str(first.get("company_name", "")),
+        "LAST_TASK_INDEX": str(last.get("task_index", "")),
+        "LAST_COMPANY": str(last.get("company_name", "")),
+        "CLASSIFIER_CSV_HEADER": ",".join(CLASSIFIER_CSV_COLUMNS),
+        "RESULT_CSV_HEADER": ",".join(RESULT_CSV_COLUMNS),
+    }
+    rendered = load_worker_base_template()
+    for key, value in mapping.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    search_guarantee_markers = [str(batch_file), str(run_dir)]
+    if any("rerun_manual_fallbacks" in marker for marker in search_guarantee_markers):
+        rendered = (
+            f"{rendered.rstrip()}\n\n"
+            "Search-guarantee override for previously manual-fallback batches:\n"
+            "- This rerun window exists to guarantee actual search coverage. Do not use `search_tier = skip_candidate` in this rerun batch.\n"
+            "- Every company in this batch must receive at least `light` search, so `project_search_required` must be `yes` for every company.\n"
+            "- A no-token conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
+            "- Do not close a row as no-token only from company-type heuristics; perform the bounded or full search first, then conclude `token_ticker = []` if appropriate.\n"
+        )
+    return rendered
 
-You are Worker {worker_slot} in round {round_index} for the part5 company-to-token review.
 
-You are not alone in the codebase. Do not revert or overwrite edits made by others.
-
-Exclusive write scope:
-- {run_dir}
-
-Read:
-- {PART5_DIR / "Plan.md"}
-- {batch_file}
-- {run_dir / "tasks.jsonl"}
-- {PART5_DIR / "agent_prompt_template.md"}
-
-Task range:
-- batch_file: {batch_file.name}
-- task_count: {len(tasks)}
-- first_task_index: {first.get("task_index")}
-- first_company: {first.get("company_name")}
-- last_task_index: {last.get("task_index")}
-- last_company: {last.get("company_name")}
-
-Method:
-- Read `Plan.md` and `agent_prompt_template.md` once, then apply that workflow to each JSONL `input_row`.
-- `tasks.jsonl` carries task data and file references; it does not duplicate the full prompt text.
-- For every company, first classify company type, crypto project likelihood, search tier, project_search_required, risk flags, and classifier reason.
-- Write one classifier/router row per company to `classifier_results.csv`.
-- Use `search_tier = full`, `light`, or `skip_candidate` according to `Plan.md`.
-- Use `project_search_required = yes` for `full` and `light`; use `no` only for `skip_candidate`.
-- If `search_tier = skip_candidate`, write one completed result row with `token_ticker = []` and a clear `project_search_reason` derived from `classifier_reason`.
-- If `search_tier = light`, run a bounded token-existence check.
-- If `search_tier = full`, search freely to identify company -> project -> fungible token ticker mapping.
-- Prefer official and primary sources, but do not limit research to official website, CoinGecko, or CoinMarketCap.
-- Return exactly one CSV row per company.
-- If no supported token is found, set `token_ticker` to `[]`.
-- If multiple tokens are found, keep one row and put all symbols in `token_ticker` as a JSON list, e.g. `["ABC","XYZ"]`.
-- Also use JSON-list strings for `project_name`, `project_url`, `token_name`, and `token_url`.
-- Do not use stock ticker, NFT-only symbol, chain name, or product code as a fungible token ticker unless the evidence clearly supports it.
-
-Write:
-- {run_dir / "classifier_results.csv"}
-- {run_dir / "results.csv"}
-
-Classifier CSV header:
-{",".join(CLASSIFIER_CSV_COLUMNS)}
-
-CSV header:
-{",".join(RESULT_CSV_COLUMNS)}
-
-Final response should report:
-- classifier rows written
-- total data rows written
-- rows with non-empty `token_ticker`
-- rows with `token_ticker = []`
-- rows by `search_tier`
-- `needs_manual_review = yes` count
-- classifier file path
-- results file path
-"""
+def build_worker_instructions(
+    batch_file: Path,
+    run_dir: Path,
+    tasks: list[dict],
+    round_index: int,
+    worker_slot: int,
+) -> str:
+    return render_worker_base_instructions(
+        batch_file=batch_file,
+        run_dir=run_dir,
+        tasks=tasks,
+        round_index=round_index,
+        worker_slot=worker_slot,
+    )
 
 
 def build_verifier_instructions(
     round_index: int,
     round_rows: list[dict[str, str]],
     verifier_dir: Path,
+    verification_report: Path,
+    verification_summary: Path,
 ) -> str:
     result_paths = "\n".join(f"- {row['results_csv']}" for row in round_rows)
     classifier_paths = "\n".join(f"- {row['classifier_results_csv']}" for row in round_rows)
@@ -328,6 +438,7 @@ Task:
 - Detect stock tickers, NFT-only symbols, chain names, or product codes incorrectly reported as fungible token tickers.
 - Detect `project_search_required = no` rows that should have been searched.
 - Focus on token-positive rows, skipped-search rows, ambiguous brands, low/medium confidence rows, and multiple-token signals.
+- If you detect a systematic issue pattern, report it explicitly for the main agent using one of these cause labels when applicable: `classification`, `search`, `evidence_interpretation`, `csv_formatting`, `prompt_ambiguity`, `run_harness`, `other`.
 
 Search policy:
 - Search freely.
@@ -336,8 +447,8 @@ Search policy:
 - Use secondary sources only for corroboration or disambiguation.
 
 Write:
-- {verifier_dir / "verification_report.csv"}
-- {verifier_dir / "verification_summary.md"}
+- {verification_report}
+- {verification_summary}
 
 CSV header:
 {",".join(VERIFICATION_CSV_COLUMNS)}
@@ -377,11 +488,25 @@ Authoritative correction rule:
 - skipped-search concern count
 - systematic causes found
 - recommended process updates
+- explicit feedback items for the main agent when a rerun, prompt change, or process change is recommended
 """
 
 
 def build_worker_spawn_prompt(row: dict[str, str]) -> str:
-    return f"""Use a worker subagent for this part5 batch. Recommended model: gpt-5.4-mini, reasoning medium.
+    attempt_mode = str(row.get("prepared_mode") or "fresh_full_batch")
+    if attempt_mode == "narrowed_suffix_only":
+        ownership_note = "- This is a narrowed recovery segment. Respect the wrapper lease check and recovery cap."
+    elif attempt_mode == "continue_from_prefix":
+        ownership_note = "- This is a recovery attempt with a preserved prefix. Own the remaining suffix in one fresh worker and do not proactively hand off mid-batch."
+    else:
+        ownership_note = "- This is the normal full-batch attempt. Own the whole batch in one fresh worker and exit after this single attempt finishes."
+    return f"""Use a fresh worker subagent for exactly one part5 batch attempt. Do not reuse a finished worker context for a later attempt or a later batch. Recommended model: gpt-5.4-mini, reasoning medium.
+
+Startup requirement:
+- Read only the batch-specific instructions and inputs first.
+- Process the earliest pending company immediately and write the first classifier/result rows early.
+- Do not begin with repo-wide file scans, `manifest.csv` sweeps, `verification_findings.csv` lookups, or broad exploration of other batches.
+- {ownership_note}
 
 Read the worker instructions:
 {row["instructions_file"]}
@@ -414,14 +539,52 @@ def write_rounds_markdown(path: Path, schedule_rows: list[dict[str, str]], worke
         f"- total_batches: {len(schedule_rows)}",
         f"- total_rounds: {((len(schedule_rows) - 1) // workers + 1) if schedule_rows else 0}",
         "",
-        "Use one round at a time. Start the listed workers in parallel, wait for all to finish, then start the fresh verifier for that same round.",
+        "Default entrypoint is the blocking supervisor. It owns the fixed runtime flow `prepare -> launch -> mark-started -> watch -> lint -> next round` and should not exit until all requested rounds finish.",
+        "",
+        "Default mode is one fresh worker per batch. Recovery may create a fresh continuation worker for the unresolved suffix, but only after a failure or explicit rerun decision.",
         "",
         "Do not collect, merge, update checkpoint, or delete temporary run directories until the round verifier has written `verification_report.csv` and `verification_summary.md` and every non-pass row has a recorded action.",
+        "",
+        "Preferred command:",
+        "",
+        "```bash",
+        f"python part5_analyse_company_to_token/scripts/5_run_round_supervisor.py --runs-dir {path.parent} --start-round-index <ROUND_INDEX> --round-count <ROUND_COUNT>",
+        "```",
+        "",
+        "The supervisor blocks until the requested rounds complete and lint clean. Use the manual steps below only as fallback or for debugging:",
+        "",
+        "Before spawning workers for a round, build the launch queue with the runtime controller. It upgrades batches into isolated attempts and chooses the right recovery mode/model for reruns:",
+        "",
+        "```bash",
+        f"python part5_analyse_company_to_token/scripts/4_manage_round_runtime.py --runs-dir {path.parent} --round-index <ROUND_INDEX> --prepare-launches",
+        "```",
+        "",
+        "Spawn workers from `launch_queue_round_XXXX.md`, then immediately mark that round as started:",
+        "",
+        "```bash",
+        f"python part5_analyse_company_to_token/scripts/4_manage_round_runtime.py --runs-dir {path.parent} --round-index <ROUND_INDEX> --mark-round-started",
+        "```",
+        "",
+        "While the round is running, use the runtime controller instead of raw watcher commands. It detects both startup no-row failures and partial stalls and writes `runtime_actions_round_XXXX.csv` with kill+respawn recommendations:",
+        "",
+        "```bash",
+        f"python part5_analyse_company_to_token/scripts/4_manage_round_runtime.py --runs-dir {path.parent} --round-index <ROUND_INDEX> --watch-round --startup-no-row-timeout-seconds 480 --partial-stall-timeout-seconds 240",
+        "```",
+        "",
+        "If the runtime controller emits actions, rerun `--prepare-launches` for that same round and respawn only the affected batches or recovery attempts. Each new attempt must use a fresh worker and the previous worker should be considered closed.",
+        "",
+        "Before starting the fresh verifier, run the local lint pass against the active attempt outputs. Any immutable identity drift must be fixed before verifier starts:",
+        "",
+        "```bash",
+        f"python part5_analyse_company_to_token/scripts/3_collect_results.py --runs-dir {path.parent} --lint-only --repair-identity-drift-in-place --fail-on-identity-drift",
+        "```",
+        "",
+        "If lint or the runtime controller marks any `needs_rerun` rows in `schedule.csv` or writes a rerun artifact CSV, rerun those batches with fresh workers before starting the verifier.",
         "",
         "After worker results are complete, collect merged results and manual-review rows:",
         "",
         "```bash",
-        f"python part5_analyse_company_to_token/scripts/3_collect_results.py --runs-dir {path.parent}",
+        f"python part5_analyse_company_to_token/scripts/3_collect_results.py --runs-dir {path.parent} --cleanup-run-artifacts",
         "```",
         "",
     ]
@@ -444,7 +607,7 @@ def write_rounds_markdown(path: Path, schedule_rows: list[dict[str, str]], worke
             lines.extend([f"## Round {current_round}", ""])
         lines.extend(
             [
-                f"### Worker {row['worker_slot']} - {row['batch_file']}",
+                f"### Worker {row['worker_slot']} - {Path(row['batch_file']).name}",
                 "",
                 "```text",
                 build_worker_spawn_prompt(row),
@@ -480,12 +643,10 @@ def prepare_round_verification(
     round_rows: list[dict[str, str]],
     force: bool,
 ) -> dict[str, str]:
-    verifier_dir = runs_dir / f"round_{round_index:04d}_verification"
-    verifier_dir.mkdir(parents=True, exist_ok=True)
-
-    verification_report = verifier_dir / "verification_report.csv"
-    verification_summary = verifier_dir / "verification_summary.md"
-    verifier_instructions = verifier_dir / "verifier_instructions.md"
+    verifier_dir = runs_dir
+    verification_report = runs_dir / f"verification_report_round_{round_index:04d}.csv"
+    verification_summary = runs_dir / f"verification_summary_round_{round_index:04d}.md"
+    verifier_instructions = runs_dir / f"verifier_instructions_round_{round_index:04d}.md"
 
     write_verification_header(verification_report, force=force)
 
@@ -513,7 +674,13 @@ def prepare_round_verification(
 
     if force or not verifier_instructions.exists():
         verifier_instructions.write_text(
-            build_verifier_instructions(round_index, round_rows, verifier_dir),
+            build_verifier_instructions(
+                round_index,
+                round_rows,
+                verifier_dir,
+                verification_report,
+                verification_summary,
+            ),
             encoding="utf-8",
         )
 
@@ -540,30 +707,105 @@ def prepare_run(
     if force or not tasks_path.exists():
         shutil.copyfile(batch_file, tasks_path)
 
-    classifier_results_csv = run_dir / "classifier_results.csv"
+    base_instructions_file = run_dir / "base_worker_instructions.md"
+    base_instruction_text = build_worker_instructions(batch_file, run_dir, tasks, round_index, worker_slot)
+    base_instructions_file.write_text(base_instruction_text, encoding="utf-8")
+
+    attempts_dir = run_dir / "attempts"
+    attempts_dir.mkdir(parents=True, exist_ok=True)
+    active_attempt = attempts_dir / "attempt_0001"
+    active_attempt.mkdir(parents=True, exist_ok=True)
+    segment_policy = load_segment_policy()
+    lease_id = make_lease_id(worker_slot, 1)
+    active_lease_file = active_lease_path(run_dir)
+
+    classifier_results_csv = active_attempt / "classifier_results.csv"
     write_classifier_header(classifier_results_csv, force=force)
 
-    results_csv = run_dir / "results.csv"
+    results_csv = active_attempt / "results.csv"
     write_results_header(results_csv, force=force)
 
-    instructions_file = run_dir / "instructions.md"
+    instructions_file = active_attempt / "worker_instructions.md"
+    metadata_file = attempt_metadata_path(active_attempt)
+    write_json(
+        metadata_file,
+        {
+            "attempt_index": 1,
+            "attempt_mode": "fresh_full_batch",
+            "lease_id": lease_id,
+            "attempt_start_prefix_rows": 0,
+            "segment_target_rows": segment_policy["target_rows_per_attempt"],
+            "segment_hard_cap_rows": segment_policy["hard_cap_rows_per_attempt"],
+            "updated_at": now_utc().isoformat(),
+        },
+    )
+    write_json(
+        active_lease_file,
+        {
+            "lease_id": lease_id,
+            "attempt_index": 1,
+            "active_attempt": str(active_attempt),
+            "attempt_start_prefix_rows": 0,
+            "segment_target_rows": segment_policy["target_rows_per_attempt"],
+            "segment_hard_cap_rows": segment_policy["hard_cap_rows_per_attempt"],
+            "updated_at": now_utc().isoformat(),
+        },
+    )
     if force or not instructions_file.exists():
         instructions_file.write_text(
-            build_worker_instructions(batch_file, run_dir, tasks, round_index, worker_slot),
+            build_initial_attempt_instructions(
+                base_instruction_text=base_instruction_text,
+                attempt_dir=active_attempt,
+                tasks_path=tasks_path,
+                active_lease_file=active_lease_file,
+                lease_id=lease_id,
+                segment_target_rows=segment_policy["target_rows_per_attempt"],
+                segment_hard_cap_rows=segment_policy["hard_cap_rows_per_attempt"],
+            ),
             encoding="utf-8",
         )
 
     first = tasks[0]
     last = tasks[-1]
     result_rows = count_result_rows(results_csv)
-    status = "completed" if result_rows >= len(tasks) else "pending"
-    if 0 < result_rows < len(tasks):
-        status = "partial"
+    classifier_rows = count_result_rows(classifier_results_csv)
+    if result_rows >= len(tasks) and classifier_rows >= len(tasks):
+        status = "completed"
+        prepared_mode = ""
+        prepared_reason = ""
+        queue_state = "ready_to_collect"
+    else:
+        status = "prepared"
+        prepared_mode = "continue_from_prefix" if max(result_rows, classifier_rows) > 0 else "fresh_full_batch"
+        prepared_reason = "initial_prepare"
+        queue_state = "queued"
+
+    failure_counts_json = json.dumps(
+        {
+            "startup_no_row": 0,
+            "header_only_timeout": 0,
+            "partial_stall": 0,
+            "row_count_mismatch": 0,
+            "schema_error": 0,
+            "verifier_forced_rerun": 0,
+            "agent_unresponsive": 0,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
     return {
         "round_index": str(round_index),
         "worker_slot": str(worker_slot),
-        "batch_file": batch_file.name,
+        "slot_id": "",
+        "queue_order": str(batch_number(batch_file)),
+        "queue_state": queue_state,
+        "collect_state": "pending",
+        "ready_to_collect_at": iso_now() if status == "completed" else "",
+        "collected_at": "",
+        "last_collected_attempt_index": "",
+        "collect_failure_reason": "",
+        "batch_file": relative_path(batch_file),
         "task_count": str(len(tasks)),
         "first_task_index": str(first.get("task_index", "")),
         "last_task_index": str(last.get("task_index", "")),
@@ -571,10 +813,38 @@ def prepare_run(
         "last_company": str(last.get("company_name", "")),
         "run_dir": relative_path(run_dir),
         "tasks_file": relative_path(tasks_path),
+        "base_instructions_file": relative_path(base_instructions_file),
+        "attempts_dir": relative_path(attempts_dir),
+        "active_attempt": relative_path(active_attempt),
+        "attempt_index": "1",
+        "attempt_metadata_file": relative_path(metadata_file),
+        "current_attempt_mode": "fresh_full_batch",
         "classifier_results_csv": relative_path(classifier_results_csv),
         "results_csv": relative_path(results_csv),
         "instructions_file": relative_path(instructions_file),
+        "active_lease_file": relative_path(active_lease_file),
+        "lease_id": lease_id,
+        "attempt_start_prefix_rows": "0",
+        "planned_rotate": "",
+        "segment_target_rows": str(segment_policy["target_rows_per_attempt"]),
+        "segment_hard_cap_rows": str(segment_policy["hard_cap_rows_per_attempt"]),
+        "prepared_mode": prepared_mode,
+        "prepared_reason": prepared_reason,
+        "last_failure_type": "",
+        "failure_counts_json": failure_counts_json,
+        "consecutive_no_progress_attempts": "0",
         "status": status,
+        "respawn_count": "0",
+        "last_rerun_reason": "",
+        "last_rerun_at": "",
+        "started_at": "",
+        "first_row_at": "",
+        "last_progress_at": "",
+        "last_seen_classifier_rows": str(classifier_rows),
+        "last_seen_result_rows": str(result_rows),
+        "startup_failure_count": "0",
+        "stall_failure_count": "0",
+        "escalation_level": "0",
     }
 
 
