@@ -1,17 +1,17 @@
 {
-  "updated_at": "2026-04-19T08:10:17.503200+00:00",
+  "updated_at": "2026-05-06T05:20:34Z",
   "schema_version": "v2",
-  "completed_rows_in_final_results": 3900,
-  "completed_through_task_index": 3900,
-  "completed_through_batch": 130,
-  "next_batch_to_process": 131,
-  "next_task_index_to_process": 3901,
+  "completed_rows_in_final_results": 17837,
+  "completed_through_task_index": 17837,
+  "completed_through_batch": 595,
+  "next_batch_to_process": 596,
+  "next_task_index_to_process": 17838,
   "batch_size": 30,
   "workers": 5,
   "total_batches": 595,
-  "classifier_results_csv": "/home/benl66/pitchbook/part5_analyse_company_to_token/agent_runs/crypto_company/classifier_results.csv",
-  "final_results_csv": "/home/benl66/pitchbook/part5_analyse_company_to_token/agent_runs/crypto_company/results.csv",
-  "manual_review_csv": "/home/benl66/pitchbook/part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv",
-  "verification_findings_csv": "/home/benl66/pitchbook/part5_analyse_company_to_token/agent_runs/crypto_company/verification_findings.csv",
-  "status": "ready_for_batch_0131"
+  "classifier_results_csv": "/home/benl66/PitchBook_project/part5_analyse_company_to_token/agent_runs/crypto_company/classifier_results.csv",
+  "final_results_csv": "/home/benl66/PitchBook_project/part5_analyse_company_to_token/agent_runs/crypto_company/results.csv",
+  "manual_review_csv": "/home/benl66/PitchBook_project/part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv",
+  "verification_findings_csv": "/home/benl66/PitchBook_project/part5_analyse_company_to_token/agent_runs/crypto_company/verification_findings.csv",
+  "status": "completed_all_batches"
 }

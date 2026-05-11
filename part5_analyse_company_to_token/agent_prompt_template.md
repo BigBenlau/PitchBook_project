@@ -46,10 +46,10 @@
 14. 通過 verifier / collector 驗證後，完成搜索的 rows 必須被匯入 `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`。
 15. 所有 `needs_manual_review = yes` 的 rows 必須被匯入 `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`。
 16. 若使用者要求長時間無人值守地連續跑多個 batch window，主協調端應使用 `part5_analyse_company_to_token/scripts/6_start_long_running_supervisor.py` 啟動 detached supervisor，而不是手動逐輪串 `prepare -> launch -> mark-started -> watch`。
-17. detached longrun 預設必須優先使用 `systemd-run --user` 啟動 supervisor；只有在 `systemd-run` 失敗時才 fallback 到 `nohup` 加新 session。當前 backlog 主路徑應優先使用 `--scheduler-mode queue` 啟動 `5_run_queue_supervisor.py`；`5_run_round_supervisor.py` 僅保留給 round-mode fallback 或前景阻塞式 round run。
+17. detached longrun 預設必須優先使用 `systemd-run --user` 啟動 supervisor；只有在 `systemd-run` 失敗時才 fallback 到 `nohup` 加新 session。若未來需要新的 backlog / rerun 長跑，主路徑應優先使用 `--scheduler-mode queue` 啟動 `5_run_queue_supervisor.py`；`5_run_round_supervisor.py` 僅保留給 round-mode fallback 或前景阻塞式 round run。
 18. longrun launcher 與 supervisor 必須把解析好的絕對 `codex` binary path 顯式傳入 worker launch，不要依賴 systemd service 的 PATH 來找到 `codex`。
 19. 長跑模式會根據使用者指定的 batch-dir 或從 `agent_runs/crypto_company/results.csv` 找出下一個未完成 batch window，建立 run metadata，並將 `run_dir`、`pid`、`unit_name`、scheduler mode 與啟動參數寫入 `part5_analyse_company_to_token/agent_runs/crypto_company_longrun_latest.json`。
-20. 當前 backlog 長跑的標準 execution path 是 queue-mode：batch-scoped prepare、持續 fill slots、serialized batch-scoped collect。round 仍保留在 `schedule.csv` 中做 grouping/reporting，但 queue-mode 不以 round barrier 決定何時啟下一個 batch。
+20. 若未來需要新的 backlog 長跑，標準 execution path 是 queue-mode：batch-scoped prepare、持續 fill slots、serialized batch-scoped collect。round 仍保留在 `schedule.csv` 中做 grouping/reporting，但 queue-mode 不以 round barrier 決定何時啟下一個 batch。
 21. queue-mode 的 `--max-workers` 代表 live worker process budget，不保證永遠等於同時處理的 batch 數。若某個 batch 進入 split recovery，它可能同時佔用多個 worker process。
 22. 若使用者要求「檢查 longrun 狀態」或任何等價的長跑進度查詢，主協調端應優先執行 `part5_analyse_company_to_token/scripts/7_check_longrun_status.py`，用它來讀取 `crypto_company_longrun_latest.json`、`supervisor_state.json`、`schedule.csv` 與近期事件，而不是手動拼接多個檔案查詢。
 23. 長跑狀態查詢時，若 `crypto_company_longrun_latest.json` 含有 `unit_name`，必須先查 `systemctl --user` 的 unit 狀態，再補 heartbeat 與 host-process 掃描；只有在 systemd 狀態不可用時，才退回到 heartbeat 與 `ps -ef | grep part5`。

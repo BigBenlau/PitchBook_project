@@ -705,7 +705,7 @@ Structural checks:
   - blocking / fallback round mode: `python part5_analyse_company_to_token/scripts/5_run_round_supervisor.py --runs-dir part5_analyse_company_to_token/agent_runs/crypto_company_parallel --start-round-index <ROUND_INDEX> --round-count <ROUND_COUNT>`
   - unattended longrun entrypoint: `python part5_analyse_company_to_token/scripts/6_start_long_running_supervisor.py`
 - unattended longrun should go through `6_start_long_running_supervisor.py`, not ad hoc prepare / launch / watch loops in the main agent.
-- the launcher supports `--scheduler-mode round|queue`; the flag default is still `round` for backward compatibility, but the current active backlog path is `queue`.
+- the launcher supports `--scheduler-mode round|queue`; the flag default is still `round` for backward compatibility, but the default unattended backlog path for future reruns is `queue`.
 - queue mode keeps slots full across the whole target window instead of waiting for a full round barrier before launching more work.
 - queue-mode execution order is:
   - prepare batch-scoped launch rows with `4_manage_round_runtime.py --prepare-launches`
@@ -885,7 +885,7 @@ If the verifier finds missing or extra token tickers:
 
 ## 14. Current Operating State
 
-As of the current folder state:
+As of the current checkout state on `2026-05-05`:
 
 - authoritative batch directory: `part5_analyse_company_to_token/agent_task_batches/crypto_company`
 - generated input rows: `17837`
@@ -895,16 +895,21 @@ As of the current folder state:
 - manual review path: `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`
 - verification findings path: `part5_analyse_company_to_token/agent_runs/crypto_company/verification_findings.csv`
 - checkpoint path: `part5_analyse_company_to_token/agent_runs/crypto_company/checkpoint.json`
-- merged completed rows: `0`
-- next batch to process: `batch_0001`
+- merged classifier rows: `17837`
+- merged completed result rows: `17837`
+- manual review rows currently present: `2460`
+- completed through batch: `595`
+- remaining ordinary batch backlog: `0`
+- checkpoint sentinel next batch: `596`
 
 Current interpretation rules:
 
-- Treat `agent_runs/crypto_company/` as the only final-output authority for the next run.
-- Treat `agent_runs/crypto_company/results.csv` as the durable source of truth for completed search results.
+- Treat `agent_runs/crypto_company/` as the only final-output authority for this completed checkout.
+- Treat `agent_runs/crypto_company/results.csv` as the durable source of truth showing that all `595` planned batches have already been merged.
 - Treat `agent_runs/crypto_company/needs_manual_review.csv` as the durable source of truth for unresolved manual-confirm rows.
-- Treat `agent_task_batches/crypto_company/` as the only authoritative batch source for the next run.
+- Treat `agent_runs/crypto_company/checkpoint.json` with `next_batch_to_process = 596` and `status = completed_all_batches` as the sentinel completed state, not as pending ordinary backlog work.
+- Treat `agent_task_batches/crypto_company/` as the authoritative batch source only for audits, forensics, or explicit reruns.
 - `part5_analyse_company_to_token/agent_task_batches/crypto_company_batch_0001_v2` is a legacy snapshot and must not be used as resume authority.
-- Do not infer current progress from temporary worker folders. Temporary folders may be deleted after merge.
+- Do not infer current progress from temporary worker folders or assume that a detached longrun is still active; temporary run directories may have been deleted after merge.
 
-Existing pre-v2 or legacy batch artifacts should be treated as historical output only. Run the next round from the current batch directory and current checkpoint state.
+Existing pre-v2 or legacy batch artifacts should be treated as historical output only. There is no remaining ordinary batch window to resume from this checkout; any future work should start as an explicit audit, targeted rerun, or manual-review follow-up against the current final outputs.

@@ -16,7 +16,7 @@
   - blocking round-mode scheduler
   - shared helper layer reused by queue mode
 - Queue supervisor: `scripts/5_run_queue_supervisor.py`
-  - active unattended backlog scheduler
+  - default unattended backlog scheduler when a new backlog run is launched
   - owns live queue scheduling, slot filling, collect gating, and tail-retry flow
 - Collector/lint: `scripts/3_collect_results.py`
   - validates active attempt outputs
@@ -96,7 +96,7 @@ Default entrypoint:
 1. Run `scripts/2_prepare_worker_runs.py` for the desired batch window.
 2. Run `scripts/6_start_long_running_supervisor.py`.
 3. Prefer `systemd-run --user` for detached longruns. Fall back to `nohup` plus a new session only if `systemd-run` fails.
-4. Use `--scheduler-mode queue` for backlog longruns unless the operator explicitly needs blocking round-mode behavior.
+4. Use `--scheduler-mode queue` for backlog longruns or targeted rerun backfills unless the operator explicitly needs blocking round-mode behavior.
 5. Use `scripts/7_check_longrun_status.py` as the authoritative status entrypoint.
 
 Manual round-mode fallback:
@@ -167,7 +167,7 @@ Round supervisor phases:
 - `completed`
 - `failed`
 
-Round mode still treats `deferred_long_tail` as operationally resolved for the current round so the run can keep advancing, but queue mode is the active unattended backlog path.
+Round mode still treats `deferred_long_tail` as operationally resolved for the current round so the run can keep advancing, but queue mode remains the default unattended backlog path for future longruns.
 
 ## Status Reporting
 
