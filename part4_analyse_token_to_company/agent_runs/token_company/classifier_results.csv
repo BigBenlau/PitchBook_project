@@ -1,0 +1,31 @@
+task_index,canonical_slug,token_symbol,token_name,token_origin_type,company_link_likelihood,search_tier,company_search_required,risk_flags,classifier_reason
+1,bitcoin,BTC,Bitcoin,layer1_or_l2,none,full,yes,"[""no_central_company""]",Bitcoin is an open-source layer-1 protocol with no central authority or company; canonical CG/CMC pages and the official site confirm there is no stable company mapping.
+2,ethereum,ETH,Ethereum,layer1_or_l2,medium,full,yes,"[""foundation_support""]",Ethereum is an open-source layer-1 protocol with no central owner; the Ethereum Foundation is the main nonprofit supporting protocol development and ecosystem funding.
+3,tether,USDT,Tether,stablecoin,high,full,yes,"[""issuer_stablecoin""]",Tether is a fiat-backed stablecoin; the official Tether site and issuance primer identify Tether Operations Limited as the issuer/operator.
+4,xrp,XRP,XRP,layer1_or_l2,high,full,yes,"[""ripple_association""]","XRP is the native token of the XRP Ledger, and Ripple’s official XRP pages describe Ripple as the company using and contributing to XRPL and XRP."
+5,bnb,BNB,BNB,exchange_token,high,full,yes,"[""exchange_token""]",BNB was created by Binance and is now the utility token of the BNB Chain ecosystem.
+6,usd-coin,USDC,USDC,stablecoin,high,full,yes,"[""issuer_stablecoin""]",USDC is a regulated stablecoin issued by Circle.
+7,solana,SOL,Solana,layer1_or_l2,high,full,yes,"[""foundation_company_split""]",Solana is a layer-1 network supported by both Solana Foundation and Solana Labs.
+8,tron,TRX,TRON,layer1_or_l2,medium,full,yes,"[""dao_governance""]",TRON is a layer-1 network whose official site centers TRON DAO as the governing community organization.
+9,dogecoin,DOGE,Dogecoin,meme_or_community,low,full,yes,"[""no_central_company""]",Dogecoin is a community-driven open-source meme currency with no stable operating company identified.
+10,hyperliquid,HYPE,Hyperliquid,protocol_or_app,medium,full,yes,"[""opaque_organization""]","Hyperliquid is an L1 + onchain trading protocol; the official site redirects to Hyper Foundation, but the ownership structure is not fully conventional."
+11,unus-sed-leo,LEO,UNUS SED LEO,exchange_token,high,full,yes,"[""exchange_token""]",LEO is the utility token of the Bitfinex platform and is tied to the Bitfinex/iFinex ecosystem.
+12,cardano,ADA,Cardano,layer1_or_l2,high,full,yes,"[""foundation_company_split""]","Cardano is a layer-1 network whose ecosystem is anchored by Cardano Foundation, IOHK, and EMURGO."
+13,bitcoin-cash,BCH,Bitcoin Cash,layer1_or_l2,low,full,yes,"[""no_central_company""]",Bitcoin Cash is a decentralized forked layer-1 network with no stable company entity identified.
+14,chainlink,LINK,Chainlink,protocol_or_app,high,full,yes,"[""oracle_platform""]",Chainlink is an oracle platform with a clear corporate developer in Chainlink Labs.
+15,monero,XMR,Monero,layer1_or_l2,low,full,yes,"[""no_central_company""]",Monero is an open-source privacy network with no stable company entity identified.
+16,ethena-usde,USDE,Ethena USDe,stablecoin,high,full,yes,"[""synthetic_stablecoin""]",USDe is issued by the Ethena protocol and operated by Ethena Labs.
+17,canton-network,CC,Canton,layer1_or_l2,medium,full,yes,"[""enterprise_governance""]",Canton is a public L1 blockchain whose creator and principal commercial operator is Digital Asset.
+18,multi-collateral-dai,DAI,Dai,stablecoin,low,full,yes,"[""decentralized_governance""]",Dai is governed by the Maker Protocol/Sky ecosystem rather than a stable operating company.
+19,zcash,ZEC,Zcash,layer1_or_l2,high,full,yes,"[""privacy_protocol""]",Zcash has identifiable supporting entities in Electric Coin Company and the Zcash Foundation.
+20,stellar,XLM,Stellar,layer1_or_l2,high,full,yes,"[""foundation_support""]",Stellar has a clear nonprofit steward in the Stellar Development Foundation.
+21,usd1,USD1,World Liberty Financial USD,stablecoin,high,full,yes,"[""regulated_stablecoin""]",USD1 is a fiat-backed stablecoin brand owned by World Liberty Financial and issued by BitGo Trust.
+22,litecoin,LTC,Litecoin,layer1_or_l2,low,full,yes,"[""no_central_company""]",Litecoin is an open-source decentralized payment network with no stable company mapping.
+23,paypal-usd,PYUSD,PayPal USD,stablecoin,high,full,yes,"[""issuer_stablecoin""]",PYUSD is a stablecoin issued by Paxos Trust Company for the PayPal ecosystem.
+24,avalanche,AVAX,Avalanche,layer1_or_l2,high,full,yes,"[""foundation_company_split""]",Avalanche is a layer-1 network with a clear company steward in Ava Labs.
+25,hedera,HBAR,Hedera,layer1_or_l2,medium,full,yes,"[""council_governance""]","Hedera is governed through Hedera Hashgraph, LLC and the Hedera Council."
+26,sui,SUI,Sui,layer1_or_l2,high,full,yes,"[""foundation_company_split""]",Sui is supported by both Sui Foundation and Mysten Labs.
+27,bittensor,TAO,Bittensor,layer1_or_l2,medium,full,yes,"[""foundation_transition""]","Bittensor is still decentralized, but OpenTensor remains the identifiable official steward in the current transition."
+28,shiba-inu,SHIB,Shiba Inu,meme_or_community,low,full,yes,"[""no_central_company""]",Shiba Inu is a meme/community token with no stable operating company identified.
+29,memecore,M,MemeCore,meme_or_community,medium,full,yes,"[""community_project""]",MemeCore is an official creative-studio/blockchain project with a named operating ecosystem.
+30,toncoin,TON,Toncoin,layer1_or_l2,high,full,yes,"[""foundation_support""]","Toncoin is supported by the TON Foundation, which publicly stewards the network."
