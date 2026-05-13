@@ -1,0 +1,9 @@
+{
+  "lease_id": "slot01-attempt0001-20260513T151726726244Z",
+  "attempt_index": 1,
+  "active_attempt": "/Users/benlao/Downloads/STANFORD_20260201/part6_analyse_investor_capabilities/agent_runs/crypto_investor_parallel_jump_wintermute_20260513/batch_0001/attempts/attempt_0001",
+  "attempt_start_prefix_rows": 0,
+  "segment_target_rows": 12,
+  "segment_hard_cap_rows": 15,
+  "updated_at": "2026-05-13T15:17:26.726904+00:00"
+}

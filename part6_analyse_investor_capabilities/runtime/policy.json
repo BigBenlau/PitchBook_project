@@ -1,0 +1,113 @@
+{
+  "status_model": {
+    "prepared": "attempt is materialized and ready to launch; controller may emit it in a launch queue",
+    "running": "attempt has been launched and is expected to make row progress",
+    "needs_rerun": "current attempt should not be relaunched; controller must prepare a new attempt or reuse prefix into a new attempt",
+    "completed": "active attempt wrote the full expected row set and passed controller-level completion checks"
+  },
+  "attempt_modes": {
+    "fresh_full_batch": "default mode: one fresh worker owns the whole batch from the first task with empty CSV bodies",
+    "fresh_restart": "rerun mode: discard the previous active attempt for execution purposes and launch a newly prepared empty full-batch attempt",
+    "continue_from_prefix": "recovery mode: launch one fresh worker that preserves a validated prefix and owns the remaining suffix until batch completion",
+    "narrowed_suffix_only": "last-resort recovery mode: launch only a narrowed unresolved suffix segment after repeated no-progress or row-count failures"
+  },
+  "failure_types": {
+    "startup_no_row": "both CSVs remain header-only after startup timeout",
+    "header_only_timeout": "CSV outputs stay header-only too long after launch",
+    "partial_stall": "a partial attempt stops increasing row counts for too long",
+    "row_count_mismatch": "collector/lint finds valid prefix but missing or extra rows",
+    "schema_error": "collector/lint finds severe structural/schema problems in an attempt output",
+    "verifier_forced_rerun": "verifier requires rerunning a company or batch",
+    "agent_unresponsive": "launcher or main agent cannot obtain progress/heartbeat from the assigned worker"
+  },
+  "timeouts": {
+    "startup_no_row_seconds": 480,
+    "partial_stall_seconds": 240
+  },
+  "segment_policy": {
+    "target_rows_per_attempt": 12,
+    "hard_cap_rows_per_attempt": 15,
+    "planned_rotate_idle_seconds": 45,
+    "single_active_lease_per_batch": true,
+    "reconcile_prefer_longest_valid_prefix": true,
+    "recovery_only": true
+  },
+  "failure_count_defaults": {
+    "startup_no_row": 0,
+    "header_only_timeout": 0,
+    "partial_stall": 0,
+    "row_count_mismatch": 0,
+    "schema_error": 0,
+    "verifier_forced_rerun": 0,
+    "agent_unresponsive": 0
+  },
+  "escalation_rules": [
+    {
+      "name": "default",
+      "min_no_progress_attempts": 0,
+      "any_failure_types": [],
+      "model": "gpt-5.4-mini",
+      "reasoning_effort": "medium",
+      "preferred_attempt_mode": "fresh_full_batch"
+    },
+    {
+      "name": "early_recovery",
+      "min_no_progress_attempts": 1,
+      "any_failure_types": [
+        "startup_no_row",
+        "header_only_timeout",
+        "partial_stall",
+        "row_count_mismatch",
+        "agent_unresponsive"
+      ],
+      "model": "gpt-5.4-mini",
+      "reasoning_effort": "high",
+      "preferred_attempt_mode": "continue_from_prefix"
+    },
+    {
+      "name": "strong_recovery",
+      "min_no_progress_attempts": 2,
+      "any_failure_types": [
+        "startup_no_row",
+        "header_only_timeout",
+        "partial_stall",
+        "row_count_mismatch",
+        "schema_error",
+        "agent_unresponsive"
+      ],
+      "model": "gpt-5.4-mini",
+      "reasoning_effort": "high",
+      "preferred_attempt_mode": "continue_from_prefix"
+    },
+    {
+      "name": "terminal_recovery",
+      "min_no_progress_attempts": 3,
+      "any_failure_types": [
+        "partial_stall",
+        "row_count_mismatch",
+        "schema_error",
+        "agent_unresponsive"
+      ],
+      "model": "gpt-5.4-mini",
+      "reasoning_effort": "xhigh",
+      "preferred_attempt_mode": "narrowed_suffix_only"
+    }
+  ],
+  "cleanup_artifacts_globs": [
+    "launch_queue_round_*.csv",
+    "launch_queue_round_*.md",
+    "runtime_actions_round_*.csv",
+    "runtime_actions_round_*.md",
+    "verification_report_round_*.csv",
+    "verification_summary_round_*.md",
+    "verifier_instructions_round_*.md",
+    "lint_rerun_batches.csv",
+    "lint_rerun_batches.md",
+    "startup_respawn_batches.csv",
+    "startup_respawn_batches.md",
+    "header_only_rerun_batches.csv",
+    "header_only_rerun_batches.md",
+    "schedule.csv",
+    "schedule_rounds.md"
+  ]
+}
