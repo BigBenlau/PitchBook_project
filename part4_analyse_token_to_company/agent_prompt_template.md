@@ -28,7 +28,7 @@
 2. 讀當前 token row
 3. 先做 classifier/router
 4. 寫 `token_origin_type`、`entity_link_likelihood`、`search_tier`、`entity_search_required`、`risk_flags`、`classifier_reason`
-5. 先把 classifier row append 到 `classifier_results.csv`
+5. 先把 classifier row 寫成結構化 JSON，再用 `scripts/part4_safe_csv_append.py` 寫入 `classifier_results.csv`
 6. 若 `search_tier = skip_candidate`，直接輸出一行 no-entity 結果
 7. 若 `search_tier = light`，做 bounded check
 8. 若 `search_tier = full`，做完整 token -> project -> company research
@@ -99,6 +99,16 @@ Allowed `search_tier`：
 `skip_candidate`：
 
 - 只用於明顯噪音、重複、無法 justify company search 的 row
+
+## CSV Write Rules
+
+- 不可直接手改 CSV 文字
+- 不可用 shell `echo` / heredoc 直接拼接 CSV 行
+- classifier/result row 都必須先整理成 JSON object
+- 再用 `python3 part4_analyse_token_to_company/scripts/part4_safe_csv_append.py` 寫入對應 CSV
+- 一律帶 `--tasks-file`，讓 immutable identity fields 以 `tasks.jsonl` 為準
+- 若 wrapper 提供 `attempt_metadata.json`，一律同時帶 `--attempt-metadata`，避免 recovery attempt 覆寫已保留 prefix rows
+- 預設用 `--upsert-key task_index`
 
 Canonical token page rule：
 
