@@ -14,8 +14,8 @@ import subprocess
 import sys
 import time
 import traceback
-from collections import Counter
-from datetime import datetime, timezone
+from collections import Counter, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ DEFAULT_STARTUP_TIMEOUT_SECONDS = 480
 DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS = 240
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_BATCH_TIMEOUT_SECONDS = 7200
+DEFAULT_MAX_BATCH_RESTARTS = 8
 DEFAULT_SPLIT_BATCH_RESPAWN_THRESHOLD = 5
 DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 3
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
@@ -45,16 +46,37 @@ SPLIT_BATCH_LAUNCH_REASON = "split_batch_2x15"
 SPLIT_STATE_FILE_NAME = "split_recovery_state.json"
 SPLIT_OUTCOME_FILE_NAME = "search_outcome.json"
 SPLIT_SHARDS_DIR_NAME = "split_recovery"
+SPLIT_MERGED_CLASSIFIER_FILE_NAME = "merged_classifier_results.csv"
+SPLIT_MERGED_RESULTS_FILE_NAME = "merged_results.csv"
+SPLIT_MERGE_MANIFEST_FILE_NAME = "merge_manifest.json"
 DEFERRED_LONG_TAIL_CSV = "deferred_long_tail_batches.csv"
 DEFERRED_LONG_TAIL_MD = "deferred_long_tail_batches.md"
 GLOBAL_LONG_TAIL_BACKLOG_CSV = DEFAULT_FINAL_DIR / "long_tail_batches_pending.csv"
-ROUND_RESOLVED_STATUSES = {"completed", "deferred_long_tail"}
+RETRY_CAPPED_CSV = "retry_capped_batches.csv"
+RETRY_CAPPED_MD = "retry_capped_batches.md"
+GLOBAL_RETRY_CAPPED_BACKLOG_CSV = DEFAULT_FINAL_DIR / "retry_capped_batches_pending.csv"
+PARTIAL_COMPLETE_RETRY_PENDING_STATUS = "partial_complete_retry_pending"
+WORKER_FAILED_RETRY_PENDING_STATUS = "worker_failed_retry_pending"
+SCHEMA_ERROR_QUARANTINED_STATUS = "schema_error_quarantined"
+COLLECT_BLOCKED_STATUS = "collect_blocked"
+NONBLOCKING_FAILURE_STATUSES = {
+    PARTIAL_COMPLETE_RETRY_PENDING_STATUS,
+    WORKER_FAILED_RETRY_PENDING_STATUS,
+    SCHEMA_ERROR_QUARANTINED_STATUS,
+    COLLECT_BLOCKED_STATUS,
+}
+RETRY_CAPPED_STATUS = "retry_capped"
+RETRY_CAPPED_REASON = "restart_limit_exceeded"
+ROUND_RESOLVED_STATUSES = {"completed", "deferred_long_tail", RETRY_CAPPED_STATUS, *NONBLOCKING_FAILURE_STATUSES}
 PR_SET_PDEATHSIG = 1
 SUPERVISOR_LOST_REASON = "supervisor_lost"
 SUPERVISOR_FATAL_REASON = "supervisor_fatal"
 SUPERVISOR_LOST_QUEUE_STATE = "supervisor_lost"
 SUPERVISOR_CONTEXT: dict[str, Any] = {}
 SUPERVISOR_SHUTDOWN_HANDLED = False
+WORKER_ACTIVITY_TAIL_LINES = 120
+STRONG_WORKER_ACTIVITY_TYPES = {"web_search", "file_change", "agent_message"}
+ANY_WORKER_ACTIVITY_TYPES = STRONG_WORKER_ACTIVITY_TYPES | {"command_execution"}
 
 SPLIT_BATCH_FAILURE_TYPES = {
     "startup_no_row",
@@ -133,6 +155,16 @@ def parse_args() -> argparse.Namespace:
             "Maximum wall-clock time per batch within the main longrun. "
             "When exceeded, the batch is marked deferred_long_tail, its current state is recorded, "
             "and the supervisor continues to later rounds."
+        ),
+    )
+    parser.add_argument(
+        "--max-batch-restarts",
+        type=int,
+        default=DEFAULT_MAX_BATCH_RESTARTS,
+        help=(
+            "Hard cap on how many reruns one batch may consume within the same run. "
+            "The initial launch does not count; only reruns / respawns count. "
+            "Once exceeded, the batch is marked retry_capped and the supervisor continues to other queue work."
         ),
     )
     parser.add_argument(
@@ -317,6 +349,103 @@ def resolve_repo_path(raw: str) -> Path:
     return path.resolve() if path.is_absolute() else (REPO_ROOT / path).resolve()
 
 
+def read_last_lines(path: Path, limit: int) -> list[str]:
+    tail: deque[str] = deque(maxlen=max(limit, 1))
+    with path.open("r", encoding="utf-8", errors="replace") as infile:
+        for line in infile:
+            tail.append(line.rstrip("\n"))
+    return list(tail)
+
+
+def path_mtime_utc(path: Path) -> datetime | None:
+    if not path.exists():
+        return None
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+
+
+def inspect_worker_log_activity(log_path: Path, *, tail_lines: int = WORKER_ACTIVITY_TAIL_LINES) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "available": False,
+        "last_activity_at": None,
+        "last_activity_type": "",
+        "last_activity_source": "",
+        "activity_signal_count": 0,
+        "strong_activity_count": 0,
+    }
+    if not log_path.exists() or not log_path.is_file():
+        return summary
+
+    summary["available"] = True
+    log_mtime = path_mtime_utc(log_path)
+    summary["last_activity_at"] = log_mtime
+
+    last_activity_type = ""
+    last_activity_source = ""
+    activity_signal_count = 0
+    strong_activity_count = 0
+    for line in read_last_lines(log_path, tail_lines):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or str(payload.get("type") or "").strip() != "item.completed":
+            continue
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip()
+        if not item_type or item_type not in ANY_WORKER_ACTIVITY_TYPES:
+            continue
+        activity_signal_count += 1
+        last_activity_type = item_type
+        if item_type in STRONG_WORKER_ACTIVITY_TYPES:
+            strong_activity_count += 1
+            last_activity_source = "strong_signal"
+        elif not last_activity_source:
+            last_activity_source = "command_signal"
+
+    summary["last_activity_type"] = last_activity_type
+    summary["last_activity_source"] = last_activity_source
+    summary["activity_signal_count"] = activity_signal_count
+    summary["strong_activity_count"] = strong_activity_count
+    return summary
+
+
+def activity_is_recent(activity: dict[str, Any], current_time: datetime, *, grace_seconds: int) -> bool:
+    if grace_seconds <= 0:
+        return False
+    last_activity_at = activity.get("last_activity_at")
+    if not isinstance(last_activity_at, datetime):
+        return False
+    if parse_int(activity.get("activity_signal_count"), 0) <= 0:
+        return False
+    return (current_time - last_activity_at).total_seconds() <= grace_seconds
+
+
+def activity_timeout_profile(
+    *,
+    startup_timeout_seconds: int,
+    partial_stall_timeout_seconds: int,
+) -> dict[str, int]:
+    startup_soft = startup_timeout_seconds or DEFAULT_STARTUP_TIMEOUT_SECONDS
+    startup_hard = max(startup_soft, 1200 if startup_soft <= DEFAULT_STARTUP_TIMEOUT_SECONDS else startup_soft * 2)
+    stall_soft = partial_stall_timeout_seconds or DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS
+    stall_hard = max(stall_soft, 900 if stall_soft <= DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS else stall_soft * 3)
+    activity_grace = max(180, min(startup_hard, max(stall_soft, 300)))
+    return {
+        "startup_soft_seconds": startup_soft,
+        "startup_hard_seconds": startup_hard,
+        "stall_soft_seconds": stall_soft,
+        "stall_hard_seconds": stall_hard,
+        "activity_grace_seconds": activity_grace,
+    }
+
+
 def round_rows(schedule_rows: list[dict[str, str]], round_index: int) -> list[dict[str, str]]:
     return [
         row
@@ -345,7 +474,34 @@ def row_is_deferred_long_tail(row: dict[str, str]) -> bool:
     return completion_mode == "deferred_long_tail"
 
 
+def row_is_retry_capped(row: dict[str, str]) -> bool:
+    status = (row.get("status") or "").strip()
+    completion_mode = (row.get("completion_mode") or "").strip()
+    if status == RETRY_CAPPED_STATUS:
+        return True
+    if status in {"completed", "deferred_long_tail"}:
+        return False
+    return completion_mode == RETRY_CAPPED_STATUS
+
+
+def row_has_nonblocking_failure_status(row: dict[str, str]) -> bool:
+    status = (row.get("status") or "").strip()
+    completion_mode = (row.get("completion_mode") or "").strip()
+    if status in NONBLOCKING_FAILURE_STATUSES:
+        return True
+    if status in {"completed", "deferred_long_tail", RETRY_CAPPED_STATUS}:
+        return False
+    return completion_mode in NONBLOCKING_FAILURE_STATUSES
+
+
 def effective_row_status(row: dict[str, str]) -> str:
+    if row_has_nonblocking_failure_status(row):
+        status = (row.get("status") or "").strip()
+        if status in NONBLOCKING_FAILURE_STATUSES:
+            return status
+        return completion_mode if (completion_mode := (row.get("completion_mode") or "").strip()) else "unknown"
+    if row_is_retry_capped(row):
+        return RETRY_CAPPED_STATUS
     if row_is_deferred_long_tail(row):
         return "deferred_long_tail"
     return (row.get("status") or "").strip()
@@ -370,6 +526,29 @@ def canonicalize_deferred_long_tail_row(row: dict[str, str]) -> dict[str, str]:
     return updated
 
 
+def canonicalize_retry_capped_row(row: dict[str, str]) -> dict[str, str]:
+    updated = dict(row)
+    updated["status"] = RETRY_CAPPED_STATUS
+    updated["prepared_mode"] = ""
+    updated["prepared_reason"] = RETRY_CAPPED_REASON
+    updated["last_failure_type"] = RETRY_CAPPED_REASON
+    updated["last_rerun_reason"] = RETRY_CAPPED_REASON
+    updated["completion_mode"] = RETRY_CAPPED_STATUS
+    if not (updated.get("deferred_reason") or "").strip():
+        updated["deferred_reason"] = RETRY_CAPPED_REASON
+    retry_capped_at = str(
+        updated.get("retry_capped_at")
+        or updated.get("deferred_at")
+        or updated.get("last_rerun_at")
+        or ""
+    ).strip()
+    if retry_capped_at:
+        updated["retry_capped_at"] = retry_capped_at
+        updated["deferred_at"] = updated.get("deferred_at") or retry_capped_at
+        updated["last_rerun_at"] = updated.get("last_rerun_at") or retry_capped_at
+    return updated
+
+
 def reconcile_deferred_long_tail_rows(
     schedule_csv: Path,
     schedule_rows: list[dict[str, str]],
@@ -378,6 +557,12 @@ def reconcile_deferred_long_tail_rows(
     updated_rows: list[dict[str, str]] = []
     for row in schedule_rows:
         updated = dict(row)
+        if row_is_retry_capped(updated):
+            canonical = canonicalize_retry_capped_row(updated)
+            if canonical != updated:
+                changed = True
+            updated_rows.append(canonical)
+            continue
         if row_is_deferred_long_tail(updated):
             canonical = canonicalize_deferred_long_tail_row(updated)
             if canonical != updated:
@@ -541,6 +726,205 @@ def write_long_tail_backlog(
     )
 
 
+def write_retry_capped_backlog(
+    runs_dir: Path,
+    capped_rows: list[dict[str, str]],
+) -> None:
+    csv_path = runs_dir / RETRY_CAPPED_CSV
+    md_path = runs_dir / RETRY_CAPPED_MD
+    fieldnames = [
+        "round_index",
+        "worker_slot",
+        "batch_file",
+        "run_dir",
+        "active_attempt",
+        "attempt_index",
+        "attempt_rerun_count",
+        "respawn_count",
+        "split_max_spawn_count",
+        "split_total_spawn_count",
+        "split_max_rerun_count",
+        "split_total_rerun_count",
+        "rerun_count",
+        "restart_count",
+        "max_batch_restarts",
+        "first_task_index",
+        "last_task_index",
+        "status",
+        "reason",
+        "classifier_rows",
+        "result_rows",
+        "round_entry_started_at",
+        "first_row_at",
+        "last_progress_at",
+        "retry_capped_at",
+    ]
+
+    def capped_backlog_key(row: dict[str, str]) -> str:
+        batch_file = str(row.get("batch_file") or "").strip()
+        if batch_file:
+            return batch_file
+        return (
+            f"round={parse_int(row.get('round_index'), 0)}|"
+            f"slot={str(row.get('worker_slot') or '').strip()}|"
+            f"tasks={parse_int(row.get('first_task_index'), 0)}-{parse_int(row.get('last_task_index'), 0)}"
+        )
+
+    local_index: dict[str, dict[str, str]] = {}
+    for row in load_csv_rows(csv_path):
+        local_index[capped_backlog_key(row)] = {
+            field: str(row.get(field) or "")
+            for field in fieldnames
+        }
+    for row in capped_rows:
+        local_index[capped_backlog_key(row)] = {
+            field: str(row.get(field) or "")
+            for field in fieldnames
+        }
+    merged_local_rows = sorted(
+        local_index.values(),
+        key=lambda row: (
+            parse_int(row.get("round_index"), 0),
+            parse_int(row.get("first_task_index"), 0),
+            str(row.get("batch_file") or ""),
+        ),
+    )
+    write_csv_rows(csv_path, fieldnames, merged_local_rows)
+
+    lines = [
+        "# Retry-Capped Batches",
+        "",
+        "These batches exceeded the configured restart budget and were capped so the queue could continue.",
+        "",
+    ]
+    for row in merged_local_rows:
+        lines.append(
+            f"- round {row['round_index']} {Path(row['batch_file']).name}: "
+            f"rerun_count={row['rerun_count']}/{row['max_batch_restarts']}, "
+            f"rows={row['classifier_rows']}/{row['result_rows']}, reason={row['reason']}"
+        )
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    backlog_path = GLOBAL_RETRY_CAPPED_BACKLOG_CSV
+    existing_rows = load_csv_rows(backlog_path)
+    index: dict[str, dict[str, str]] = {}
+    for row in existing_rows:
+        key = capped_backlog_key(row)
+        index[key] = {
+            "runs_dir": str(row.get("runs_dir") or ""),
+            **{
+                field: str(row.get(field) or "")
+                for field in fieldnames
+            },
+        }
+    for row in capped_rows:
+        enriched = dict(row)
+        enriched["runs_dir"] = str(runs_dir)
+        key = capped_backlog_key(enriched)
+        index[key] = {
+            "runs_dir": str(enriched.get("runs_dir") or ""),
+            **{
+                field: str(enriched.get(field) or "")
+                for field in fieldnames
+            },
+        }
+    merged_rows = sorted(
+        index.values(),
+        key=lambda row: (
+            parse_int(row.get("round_index"), 0),
+            parse_int(row.get("first_task_index"), 0),
+            str(row.get("batch_file") or ""),
+        ),
+    )
+    write_csv_rows(
+        backlog_path,
+        ["runs_dir"] + fieldnames,
+        merged_rows,
+    )
+
+
+def compute_restart_metrics(
+    row: dict[str, str],
+    *,
+    split_state: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    if split_state is None:
+        split_state = load_json_dict(split_state_path_for_row(row))
+    shard_spawn_counts = [
+        parse_int(shard.get("spawn_count"), 0)
+        for shard in split_state.get("shards", [])
+        if isinstance(shard, dict)
+    ]
+    attempt_index = parse_int(row.get("attempt_index"), 0)
+    attempt_rerun_count = max(attempt_index - 1, 0)
+    respawn_count = parse_int(row.get("respawn_count"), 0)
+    split_max_spawn_count = max(shard_spawn_counts, default=0)
+    split_total_spawn_count = sum(shard_spawn_counts)
+    split_max_rerun_count = max(split_max_spawn_count - 1, 0)
+    split_total_rerun_count = sum(max(count - 1, 0) for count in shard_spawn_counts)
+    rerun_count = max(attempt_rerun_count, respawn_count, split_max_rerun_count)
+    return {
+        "attempt_index": attempt_index,
+        "attempt_rerun_count": attempt_rerun_count,
+        "respawn_count": respawn_count,
+        "split_max_spawn_count": split_max_spawn_count,
+        "split_total_spawn_count": split_total_spawn_count,
+        "split_max_rerun_count": split_max_rerun_count,
+        "split_total_rerun_count": split_total_rerun_count,
+        "rerun_count": rerun_count,
+        "restart_count": rerun_count,
+    }
+
+
+def analyze_retry_capped_rows(
+    schedule_rows: list[dict[str, str]],
+    round_index: int,
+    *,
+    max_batch_restarts: int,
+) -> list[dict[str, str]]:
+    if max_batch_restarts <= 0:
+        return []
+
+    retry_capped_rows: list[dict[str, str]] = []
+    for row in round_rows(schedule_rows, round_index):
+        if row_is_resolved(row):
+            continue
+        split_state = load_json_dict(split_state_path_for_row(row))
+        metrics = compute_restart_metrics(row, split_state=split_state)
+        if metrics["rerun_count"] <= max_batch_restarts:
+            continue
+        retry_capped_rows.append(
+            {
+                "round_index": str(row.get("round_index") or ""),
+                "worker_slot": str(row.get("worker_slot") or ""),
+                "batch_file": str(row.get("batch_file") or ""),
+                "run_dir": str(row.get("run_dir") or ""),
+                "active_attempt": str(row.get("active_attempt") or ""),
+                "attempt_index": str(metrics["attempt_index"]),
+                "attempt_rerun_count": str(metrics["attempt_rerun_count"]),
+                "respawn_count": str(metrics["respawn_count"]),
+                "split_max_spawn_count": str(metrics["split_max_spawn_count"]),
+                "split_total_spawn_count": str(metrics["split_total_spawn_count"]),
+                "split_max_rerun_count": str(metrics["split_max_rerun_count"]),
+                "split_total_rerun_count": str(metrics["split_total_rerun_count"]),
+                "rerun_count": str(metrics["rerun_count"]),
+                "restart_count": str(metrics["restart_count"]),
+                "max_batch_restarts": str(max_batch_restarts),
+                "first_task_index": str(row.get("first_task_index") or ""),
+                "last_task_index": str(row.get("last_task_index") or ""),
+                "status": RETRY_CAPPED_STATUS,
+                "reason": RETRY_CAPPED_REASON,
+                "classifier_rows": str(row.get("last_seen_classifier_rows") or "0"),
+                "result_rows": str(row.get("last_seen_result_rows") or "0"),
+                "round_entry_started_at": str(row.get("round_entry_started_at") or ""),
+                "first_row_at": str(row.get("first_row_at") or ""),
+                "last_progress_at": str(row.get("last_progress_at") or ""),
+                "retry_capped_at": iso_now(),
+            }
+        )
+    return retry_capped_rows
+
+
 def analyze_long_tail_deferred_rows(
     schedule_rows: list[dict[str, str]],
     round_index: int,
@@ -653,6 +1037,76 @@ def mark_long_tail_deferred(
     return updated_rows
 
 
+def mark_retry_capped_rows(
+    schedule_csv: Path,
+    schedule_rows: list[dict[str, str]],
+    retry_capped_rows: list[dict[str, str]],
+    *,
+    schedule_fieldnames: list[str] | None = None,
+    runs_dir: Path,
+    events_log: Path,
+) -> list[dict[str, str]]:
+    if not retry_capped_rows:
+        return schedule_rows
+
+    capped_by_batch = {str(row.get("batch_file") or ""): row for row in retry_capped_rows}
+    updated_rows: list[dict[str, str]] = []
+    for row in schedule_rows:
+        updated = dict(row)
+        batch_file = str(updated.get("batch_file") or "")
+        capped = capped_by_batch.get(batch_file)
+        if not capped:
+            updated_rows.append(updated)
+            continue
+
+        retry_capped_at = str(capped.get("retry_capped_at") or iso_now())
+        updated["status"] = RETRY_CAPPED_STATUS
+        updated["prepared_mode"] = ""
+        updated["prepared_reason"] = RETRY_CAPPED_REASON
+        updated["last_failure_type"] = RETRY_CAPPED_REASON
+        updated["last_rerun_reason"] = RETRY_CAPPED_REASON
+        updated["last_rerun_at"] = retry_capped_at
+        updated["planned_rotate"] = ""
+        updated["completion_mode"] = RETRY_CAPPED_STATUS
+        updated["deferred_at"] = str(updated.get("deferred_at") or retry_capped_at)
+        updated["deferred_reason"] = str(capped.get("reason") or RETRY_CAPPED_REASON)
+        updated["retry_capped_at"] = retry_capped_at
+        rerun_count = str(capped.get("rerun_count") or capped.get("restart_count") or "")
+        updated["retry_cap_rerun_count"] = rerun_count
+        updated["retry_cap_restart_count"] = rerun_count
+        updated["retry_cap_limit"] = str(capped.get("max_batch_restarts") or "")
+        split_state = load_json_dict(split_state_path_for_row(updated))
+        if split_state_active(split_state):
+            split_state["state"] = RETRY_CAPPED_STATUS
+            split_state["retry_capped_at"] = retry_capped_at
+            split_state["retry_cap_rerun_count"] = updated["retry_cap_rerun_count"]
+            split_state["retry_cap_restart_count"] = updated["retry_cap_restart_count"]
+            split_state["retry_cap_limit"] = updated["retry_cap_limit"]
+            write_json_dict(split_state_path_for_row(updated), split_state)
+        log_event(
+            events_log,
+            (
+                "[retry_cap:deferred] "
+                f"round={updated.get('round_index', '')} slot={updated.get('worker_slot', '')} "
+                f"batch={batch_file} attempt={updated.get('attempt_index', '')} "
+                f"rerun_count={updated.get('retry_cap_rerun_count', '')} "
+                f"limit={updated.get('retry_cap_limit', '')} "
+                f"classifier_rows={updated.get('last_seen_classifier_rows', '0')} "
+                f"result_rows={updated.get('last_seen_result_rows', '0')}"
+            ),
+        )
+        updated_rows.append(updated)
+
+    fieldnames = list(schedule_fieldnames or [])
+    if not fieldnames:
+        fieldnames, _ = load_csv_rows_with_fields(schedule_csv)
+    if not fieldnames and updated_rows:
+        fieldnames = list(updated_rows[0].keys())
+    write_schedule_with_fields(schedule_csv, fieldnames, updated_rows)
+    write_retry_capped_backlog(runs_dir, retry_capped_rows)
+    return updated_rows
+
+
 def log_event(events_log: Path, message: str) -> None:
     events_log.parent.mkdir(parents=True, exist_ok=True)
     with events_log.open("a", encoding="utf-8") as outfile:
@@ -703,6 +1157,39 @@ def launcher_state_path_for_runs_dir(runs_dir: Path) -> Path:
     return runs_dir / "launcher_state.json"
 
 
+def should_update_latest_job_record(
+    existing_payload: dict[str, Any],
+    candidate_payload: dict[str, Any],
+) -> bool:
+    if not existing_payload:
+        return True
+    existing_runs_dir = str(existing_payload.get("runs_dir") or "").strip()
+    candidate_runs_dir = str(candidate_payload.get("runs_dir") or "").strip()
+    if existing_runs_dir and candidate_runs_dir and existing_runs_dir == candidate_runs_dir:
+        return True
+
+    existing_launched_at = parse_iso_optional(str(existing_payload.get("launched_at") or ""))
+    candidate_launched_at = parse_iso_optional(str(candidate_payload.get("launched_at") or ""))
+    if candidate_launched_at is not None and existing_launched_at is not None:
+        return candidate_launched_at >= existing_launched_at
+    if candidate_launched_at is not None and existing_launched_at is None:
+        return True
+    if candidate_launched_at is None and existing_launched_at is not None:
+        return False
+    if candidate_runs_dir and not existing_runs_dir:
+        return True
+    return False
+
+
+def write_latest_job_record_if_current(path: Path, payload: dict[str, Any]) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_payload = load_json_dict(path)
+    if not should_update_latest_job_record(existing_payload, payload):
+        return False
+    write_json_dict(path, payload)
+    return True
+
+
 def update_launcher_state_status(
     runs_dir: Path,
     *,
@@ -726,8 +1213,7 @@ def update_launcher_state_status(
     latest_job_raw = str(payload.get("latest_job_json") or "").strip()
     if latest_job_raw:
         latest_job_path = Path(latest_job_raw).expanduser()
-        latest_job_path.parent.mkdir(parents=True, exist_ok=True)
-        latest_job_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_latest_job_record_if_current(latest_job_path, payload)
 
 
 def current_round_index_from_state(
@@ -1256,6 +1742,19 @@ def detect_dead_worker_reason(log_path: Path) -> str:
     return "worker_process_exited"
 
 
+def clear_rerun_runtime_markers(row: dict[str, str]) -> dict[str, str]:
+    updated = dict(row)
+    updated["queue_state"] = "queued"
+    updated["slot_id"] = ""
+    updated["started_at"] = ""
+    updated["round_entry_started_at"] = ""
+    updated["health_state"] = "needs_rerun"
+    updated["soft_timeout_warned_at"] = ""
+    updated["last_timeout_warning_reason"] = ""
+    updated["next_eligible_retry_at"] = ""
+    return updated
+
+
 def mark_dead_worker_reruns(
     schedule_csv: Path,
     schedule_rows: list[dict[str, str]],
@@ -1321,6 +1820,18 @@ def mark_dead_worker_reruns(
 
         failure_type = "row_count_mismatch" if inspection["state"] == "partial_misaligned" else "agent_unresponsive"
         log_reason = detect_dead_worker_reason(resolve_repo_path(str(updated.get("active_attempt") or "")) / "supervisor_worker.log")
+        if (
+            str(updated.get("prepared_reason") or "").strip() == failure_type
+            and str(updated.get("last_rerun_reason") or "").strip() == failure_type
+            and parse_int(updated.get("last_seen_classifier_rows"), 0) == inspection["classifier_rows"]
+            and parse_int(updated.get("last_seen_result_rows"), 0) == inspection["result_rows"]
+        ):
+            updated["status"] = "needs_rerun"
+            updated["last_failure_type"] = failure_type
+            updated = clear_rerun_runtime_markers(updated)
+            changed = True
+            updated_rows.append(updated)
+            continue
         counts = parse_failure_counts(updated.get("failure_counts_json", ""))
         counts[failure_type] = counts.get(failure_type, 0) + 1
         updated["status"] = "needs_rerun"
@@ -1334,6 +1845,7 @@ def mark_dead_worker_reruns(
         updated["respawn_count"] = str(parse_int(updated.get("respawn_count"), 0) + 1)
         if failure_type == "agent_unresponsive":
             updated["stall_failure_count"] = str(parse_int(updated.get("stall_failure_count"), 0) + 1)
+        updated = clear_rerun_runtime_markers(updated)
         log_event(
             events_log,
             (
@@ -1477,6 +1989,23 @@ def split_state_path_for_row(row: dict[str, str]) -> Path:
 def split_outcome_path_for_row(row: dict[str, str]) -> Path:
     active_attempt_dir = resolve_repo_path(str(row.get("active_attempt") or ""))
     return active_attempt_dir / SPLIT_OUTCOME_FILE_NAME
+
+
+def split_root_for_row(row: dict[str, str]) -> Path:
+    active_attempt_dir = resolve_repo_path(str(row.get("active_attempt") or ""))
+    return active_attempt_dir / SPLIT_SHARDS_DIR_NAME
+
+
+def split_merged_classifier_path_for_row(row: dict[str, str]) -> Path:
+    return split_root_for_row(row) / SPLIT_MERGED_CLASSIFIER_FILE_NAME
+
+
+def split_merged_results_path_for_row(row: dict[str, str]) -> Path:
+    return split_root_for_row(row) / SPLIT_MERGED_RESULTS_FILE_NAME
+
+
+def split_merge_manifest_path_for_row(row: dict[str, str]) -> Path:
+    return split_root_for_row(row) / SPLIT_MERGE_MANIFEST_FILE_NAME
 
 
 def load_json_dict(path: Path) -> dict[str, Any]:
@@ -1807,7 +2336,7 @@ def initialize_split_recovery(
     base_instructions_path = resolve_repo_path(str(row.get("base_instructions_file") or ""))
     tasks = load_jsonl_tasks(tasks_path)
     shards = partition_tasks(tasks)
-    split_root = active_attempt_dir / SPLIT_SHARDS_DIR_NAME
+    split_root = split_root_for_row(row)
     split_root.mkdir(parents=True, exist_ok=True)
     base_instruction_text = base_instructions_path.read_text(encoding="utf-8")
 
@@ -1883,6 +2412,9 @@ def initialize_split_recovery(
         "progress_result_rows": 0,
         "shards": shard_entries,
         "outcome_file": str(split_outcome_path_for_row(row)),
+        "merged_classifier_results_csv": str(split_merged_classifier_path_for_row(row)),
+        "merged_results_csv": str(split_merged_results_path_for_row(row)),
+        "merge_manifest_json": str(split_merge_manifest_path_for_row(row)),
     }
     write_json_dict(split_state_path, payload)
     log_event(
@@ -2131,8 +2663,13 @@ def merge_split_outputs(
 
     classifier_path = resolve_repo_path(str(row.get("classifier_results_csv") or ""))
     results_path = resolve_repo_path(str(row.get("results_csv") or ""))
+    merged_classifier_path = split_merged_classifier_path_for_row(row)
+    merged_results_path = split_merged_results_path_for_row(row)
+    merge_manifest_path = split_merge_manifest_path_for_row(row)
     write_csv_rows(classifier_path, CLASSIFIER_CSV_COLUMNS, merged_classifier_rows)
     write_csv_rows(results_path, RESULT_CSV_COLUMNS, merged_result_rows)
+    write_csv_rows(merged_classifier_path, CLASSIFIER_CSV_COLUMNS, merged_classifier_rows)
+    write_csv_rows(merged_results_path, RESULT_CSV_COLUMNS, merged_result_rows)
 
     summary = summarize_result_rows(merged_result_rows, len(tasks))
     summary.update(
@@ -2141,10 +2678,33 @@ def merge_split_outputs(
             "batch_file": str(row.get("batch_file") or ""),
             "attempt_index": parse_int(row.get("attempt_index"), 0),
             "merged_at": iso_now(),
+            "merged_classifier_results_csv": str(merged_classifier_path),
+            "merged_results_csv": str(merged_results_path),
+            "merge_manifest_json": str(merge_manifest_path),
+            "authoritative_source": "split_merged",
         }
     )
     outcome_path = split_outcome_path_for_row(row)
     write_json_dict(outcome_path, summary)
+    write_json_dict(
+        merge_manifest_path,
+        {
+            "mode": SPLIT_BATCH_LAUNCH_REASON,
+            "batch_file": str(row.get("batch_file") or ""),
+            "attempt_index": parse_int(row.get("attempt_index"), 0),
+            "merged_at": summary["merged_at"],
+            "merged_classifier_results_csv": str(merged_classifier_path),
+            "merged_results_csv": str(merged_results_path),
+            "task_count": len(tasks),
+            "rows_written": summary["rows_written"],
+            "rows_with_entity": summary["rows_with_entity"],
+            "searched_no_entity_rows": summary["searched_no_entity_rows"],
+            "skip_candidate_rows": summary["skip_candidate_rows"],
+            "manual_review_rows": summary["manual_review_rows"],
+            "completion_reason": summary["completion_reason"],
+            "authoritative_source": "split_merged",
+        },
+    )
     final_message_path = resolve_repo_path(str(row.get("active_attempt") or "")) / "final_message.md"
     final_message_path.write_text(
         (
@@ -2163,6 +2723,10 @@ def merge_split_outputs(
     split_state["progress_classifier_rows"] = len(tasks)
     split_state["progress_result_rows"] = len(tasks)
     split_state["updated_at"] = iso_now()
+    split_state["merged_classifier_results_csv"] = str(merged_classifier_path)
+    split_state["merged_results_csv"] = str(merged_results_path)
+    split_state["merge_manifest_json"] = str(merge_manifest_path)
+    split_state["authoritative_source"] = "split_merged"
     write_json_dict(split_state_path_for_row(row), split_state)
     log_event(
         events_log,
@@ -2194,6 +2758,10 @@ def manage_split_recoveries(
     updated_rows: list[dict[str, str]] = []
     now = now_utc()
     now_iso = iso_now()
+    timeout_profile = activity_timeout_profile(
+        startup_timeout_seconds=startup_timeout_seconds,
+        partial_stall_timeout_seconds=partial_stall_timeout_seconds,
+    )
     for row in schedule_rows:
         updated = dict(row)
         if parse_int(updated.get("round_index"), 0) != round_index:
@@ -2205,9 +2773,17 @@ def manage_split_recoveries(
             updated_rows.append(updated)
             continue
 
+        previous_progress_classifier_rows = parse_int(updated.get("last_seen_classifier_rows"), 0)
+        previous_progress_result_rows = parse_int(updated.get("last_seen_result_rows"), 0)
         progress_classifier_rows = 0
         progress_result_rows = 0
         all_completed = True
+        batch_health_state = "healthy_active"
+        batch_warning_reason = ""
+        batch_next_retry_at = ""
+        latest_worker_activity_at: datetime | None = None
+        latest_worker_activity_type = ""
+        latest_worker_activity_source = ""
         split_state["state"] = "running"
         for shard in split_state.get("shards", []):
             shard_tasks = load_jsonl_tasks(Path(str(shard["tasks_file"])))
@@ -2233,6 +2809,26 @@ def manage_split_recoveries(
 
             all_completed = False
             shard["status"] = "running"
+            worker_log_path = launch_log_path(Path(str(shard["instructions_file"])))
+            worker_activity = inspect_worker_log_activity(worker_log_path)
+            worker_activity_recent = activity_is_recent(
+                worker_activity,
+                now,
+                grace_seconds=timeout_profile["activity_grace_seconds"],
+            )
+            shard["last_worker_activity_at"] = (
+                worker_activity["last_activity_at"].isoformat()
+                if isinstance(worker_activity.get("last_activity_at"), datetime)
+                else ""
+            )
+            shard["last_worker_activity_type"] = str(worker_activity.get("last_activity_type") or "")
+            shard["last_worker_activity_source"] = str(worker_activity.get("last_activity_source") or "")
+            if isinstance(worker_activity.get("last_activity_at"), datetime):
+                candidate = worker_activity["last_activity_at"]
+                if latest_worker_activity_at is None or candidate > latest_worker_activity_at:
+                    latest_worker_activity_at = candidate
+                    latest_worker_activity_type = str(worker_activity.get("last_activity_type") or "")
+                    latest_worker_activity_source = str(worker_activity.get("last_activity_source") or "")
             shard_running = active_split_shard_running(
                 registry,
                 batch_file=str(updated.get("batch_file") or ""),
@@ -2252,7 +2848,7 @@ def manage_split_recoveries(
             elapsed_since_start = int((now - started_at).total_seconds())
             elapsed_since_progress = int((now - last_progress_at).total_seconds())
 
-            if inspection["state"] == "header_only" and elapsed_since_start >= startup_timeout_seconds:
+            if inspection["state"] == "header_only" and elapsed_since_start >= timeout_profile["startup_hard_seconds"] and not worker_activity_recent:
                 split_state, registry = respawn_split_shard(
                     updated,
                     split_state,
@@ -2264,7 +2860,7 @@ def manage_split_recoveries(
                 )
                 changed = True
                 continue
-            if inspection["state"] in {"partial_prefix", "partial_misaligned"} and elapsed_since_progress >= partial_stall_timeout_seconds:
+            if inspection["state"] in {"partial_prefix", "partial_misaligned"} and elapsed_since_progress >= timeout_profile["stall_hard_seconds"] and not worker_activity_recent:
                 split_state, registry = respawn_split_shard(
                     updated,
                     split_state,
@@ -2287,6 +2883,20 @@ def manage_split_recoveries(
                     reason="split_process_exited",
                 )
                 changed = True
+                continue
+
+            if inspection["state"] == "header_only" and elapsed_since_start >= timeout_profile["startup_soft_seconds"]:
+                batch_health_state = "slow_active" if worker_activity_recent else "silent_suspect"
+                batch_warning_reason = batch_warning_reason or "split_startup_no_row_soft_timeout"
+                batch_next_retry_at = (started_at + timedelta(seconds=timeout_profile["startup_hard_seconds"])).isoformat()
+            elif inspection["state"] in {"partial_prefix", "partial_misaligned"} and elapsed_since_progress >= timeout_profile["stall_soft_seconds"]:
+                batch_health_state = "slow_active" if worker_activity_recent else "silent_suspect"
+                batch_warning_reason = batch_warning_reason or (
+                    "split_partial_stall_soft_timeout"
+                    if inspection["state"] == "partial_prefix"
+                    else "split_row_count_mismatch_soft_timeout"
+                )
+                batch_next_retry_at = (last_progress_at + timedelta(seconds=timeout_profile["stall_hard_seconds"])).isoformat()
 
         split_state["progress_classifier_rows"] = progress_classifier_rows
         split_state["progress_result_rows"] = progress_result_rows
@@ -2296,9 +2906,26 @@ def manage_split_recoveries(
         updated["status"] = "running"
         updated["last_seen_classifier_rows"] = str(progress_classifier_rows)
         updated["last_seen_result_rows"] = str(progress_result_rows)
+        updated["health_state"] = batch_health_state
+        updated["last_worker_activity_at"] = latest_worker_activity_at.isoformat() if latest_worker_activity_at else ""
+        updated["last_worker_activity_type"] = latest_worker_activity_type
+        updated["last_worker_activity_source"] = latest_worker_activity_source
+        if batch_warning_reason:
+            updated["soft_timeout_warned_at"] = updated.get("soft_timeout_warned_at") or now_iso
+            updated["last_timeout_warning_reason"] = batch_warning_reason
+            updated["next_eligible_retry_at"] = batch_next_retry_at
+        else:
+            updated["soft_timeout_warned_at"] = ""
+            updated["last_timeout_warning_reason"] = ""
+            updated["next_eligible_retry_at"] = ""
+        progress_increased = (
+            progress_classifier_rows > previous_progress_classifier_rows
+            or progress_result_rows > previous_progress_result_rows
+        )
         if progress_classifier_rows > 0 or progress_result_rows > 0:
             updated["first_row_at"] = updated.get("first_row_at") or now_iso
-            updated["last_progress_at"] = now_iso
+            if progress_increased:
+                updated["last_progress_at"] = now_iso
         changed = True
 
         if all_completed:
@@ -2307,6 +2934,12 @@ def manage_split_recoveries(
             updated["prepared_mode"] = ""
             updated["prepared_reason"] = ""
             updated["planned_rotate"] = ""
+            updated["health_state"] = "completed"
+            updated["soft_timeout_warned_at"] = ""
+            updated["last_timeout_warning_reason"] = ""
+            updated["next_eligible_retry_at"] = ""
+            updated["classifier_results_csv"] = str(split_merged_classifier_path_for_row(updated))
+            updated["results_csv"] = str(split_merged_results_path_for_row(updated))
             updated["last_seen_classifier_rows"] = str(parse_int(updated.get("task_count"), 0))
             updated["last_seen_result_rows"] = str(parse_int(updated.get("task_count"), 0))
             updated["last_rerun_reason"] = summary["completion_reason"]
@@ -2489,6 +3122,8 @@ def main() -> None:
         raise SystemExit("--round-count must be greater than 0.")
     if args.poll_seconds <= 0:
         raise SystemExit("--poll-seconds must be greater than 0.")
+    if args.max_batch_restarts <= 0:
+        raise SystemExit("--max-batch-restarts must be greater than 0.")
     if args.split_batch_respawn_threshold <= 0:
         raise SystemExit("--split-batch-respawn-threshold must be greater than 0.")
     if args.split_batch_failure_threshold <= 0:
@@ -2529,6 +3164,7 @@ def main() -> None:
             f"poll={args.poll_seconds}s startup_timeout={args.startup_no_row_timeout_seconds}s "
             f"stall_timeout={args.partial_stall_timeout_seconds}s "
             f"batch_timeout={args.batch_timeout_seconds}s "
+            f"max_batch_restarts={args.max_batch_restarts} "
             f"split_thresholds=respawn>={args.split_batch_respawn_threshold},failures>={args.split_batch_failure_threshold}"
         ),
     )
@@ -2619,6 +3255,44 @@ def main() -> None:
             )
             if split_changed:
                 save_registry(registry_json, registry)
+
+            retry_capped_rows = analyze_retry_capped_rows(
+                schedule_rows,
+                current_round_index,
+                max_batch_restarts=args.max_batch_restarts,
+            )
+            if retry_capped_rows:
+                retry_capped_batch_files = {
+                    str(row.get("batch_file") or "")
+                    for row in retry_capped_rows
+                    if str(row.get("batch_file") or "").strip()
+                }
+                registry = terminate_for_batch_files(
+                    retry_capped_batch_files,
+                    registry,
+                    events_log,
+                    reason=f"round_{current_round_index}_retry_limit",
+                )
+                schedule_fieldnames, _ = load_csv_rows_with_fields(schedule_csv)
+                schedule_rows = mark_retry_capped_rows(
+                    schedule_csv,
+                    schedule_rows,
+                    retry_capped_rows,
+                    schedule_fieldnames=schedule_fieldnames,
+                    runs_dir=runs_dir,
+                    events_log=events_log,
+                )
+                save_registry(registry_json, registry)
+                write_state(
+                    state_json,
+                    runs_dir=runs_dir,
+                    target_rounds=target_rounds,
+                    current_round_index=current_round_index,
+                    phase=RETRY_CAPPED_STATUS,
+                    schedule_rows=schedule_rows,
+                    registry=registry,
+                )
+                continue
 
             deferred_rows = analyze_long_tail_deferred_rows(
                 schedule_rows,

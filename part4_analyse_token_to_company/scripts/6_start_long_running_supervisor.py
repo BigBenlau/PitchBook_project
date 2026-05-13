@@ -33,6 +33,7 @@ DEFAULT_STARTUP_TIMEOUT_SECONDS = 480
 DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS = 240
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_BATCH_TIMEOUT_SECONDS = 7200
+DEFAULT_MAX_BATCH_RESTARTS = 8
 DEFAULT_NOHUP_BIN = "nohup"
 DEFAULT_SYSTEMD_RUN_BIN = "systemd-run"
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
@@ -83,6 +84,15 @@ def parse_args() -> argparse.Namespace:
         "--batch-timeout-seconds",
         type=int,
         default=DEFAULT_BATCH_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--max-batch-restarts",
+        type=int,
+        default=DEFAULT_MAX_BATCH_RESTARTS,
+        help=(
+            "Hard cap on reruns per batch. The initial launch does not count; "
+            "only reruns / respawns count toward this limit."
+        ),
     )
     parser.add_argument(
         "--startup-no-row-timeout-seconds",
@@ -306,6 +316,48 @@ def load_run_managed_processes(runs_dir: Path) -> list[dict[str, object]]:
     return [item for item in managed if isinstance(item, dict)]
 
 
+def parse_iso_optional(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def should_update_latest_job_record(
+    existing_payload: dict[str, object] | None,
+    candidate_payload: dict[str, object],
+) -> bool:
+    if not existing_payload:
+        return True
+    existing_runs_dir = str(existing_payload.get("runs_dir") or "").strip()
+    candidate_runs_dir = str(candidate_payload.get("runs_dir") or "").strip()
+    if existing_runs_dir and candidate_runs_dir and existing_runs_dir == candidate_runs_dir:
+        return True
+
+    existing_launched_at = parse_iso_optional(existing_payload.get("launched_at"))
+    candidate_launched_at = parse_iso_optional(candidate_payload.get("launched_at"))
+    if candidate_launched_at is not None and existing_launched_at is not None:
+        return candidate_launched_at >= existing_launched_at
+    if candidate_launched_at is not None and existing_launched_at is None:
+        return True
+    if candidate_launched_at is None and existing_launched_at is not None:
+        return False
+    if candidate_runs_dir and not existing_runs_dir:
+        return True
+    return False
+
+
+def write_latest_job_record_if_current(path: Path, payload: dict[str, object]) -> bool:
+    existing_payload = read_latest_job(path)
+    if not should_update_latest_job_record(existing_payload, payload):
+        return False
+    write_json(path, payload)
+    return True
+
+
 def managed_entry_running(entry: dict[str, object]) -> bool:
     pid = entry.get("pid")
     pgid = entry.get("pgid")
@@ -385,6 +437,7 @@ def build_supervisor_command(
     scheduler_mode: str,
     poll_seconds: int,
     batch_timeout_seconds: int,
+    max_batch_restarts: int,
     startup_timeout_seconds: int,
     partial_stall_timeout_seconds: int,
     split_batch_respawn_threshold: int,
@@ -410,6 +463,8 @@ def build_supervisor_command(
         str(poll_seconds),
         "--batch-timeout-seconds",
         str(batch_timeout_seconds),
+        "--max-batch-restarts",
+        str(max_batch_restarts),
         "--startup-no-row-timeout-seconds",
         str(startup_timeout_seconds),
         "--partial-stall-timeout-seconds",
@@ -440,6 +495,8 @@ def main() -> None:
         raise SystemExit("--workers must be greater than 0.")
     if args.poll_seconds <= 0:
         raise SystemExit("--poll-seconds must be greater than 0.")
+    if args.max_batch_restarts <= 0:
+        raise SystemExit("--max-batch-restarts must be greater than 0.")
 
     batch_dir = args.batch_dir.resolve()
     runs_parent_dir = args.runs_parent_dir.resolve()
@@ -486,6 +543,7 @@ def main() -> None:
         scheduler_mode=args.scheduler_mode,
         poll_seconds=args.poll_seconds,
         batch_timeout_seconds=args.batch_timeout_seconds,
+        max_batch_restarts=args.max_batch_restarts,
         startup_timeout_seconds=args.startup_no_row_timeout_seconds,
         partial_stall_timeout_seconds=args.partial_stall_timeout_seconds,
         split_batch_respawn_threshold=args.split_batch_respawn_threshold,
@@ -520,6 +578,7 @@ def main() -> None:
         "round_count_requested": args.round_count,
         "round_count_actual": actual_round_count,
         "batch_timeout_seconds": args.batch_timeout_seconds,
+        "max_batch_restarts": args.max_batch_restarts,
         "split_batch_respawn_threshold": args.split_batch_respawn_threshold,
         "split_batch_failure_threshold": args.split_batch_failure_threshold,
         "codex_bin": codex_bin,
@@ -529,7 +588,7 @@ def main() -> None:
 
     if args.foreground:
         write_json(runs_dir / "launcher_state.json", launcher_state)
-        write_json(latest_job_json, launcher_state)
+        write_latest_job_record_if_current(latest_job_json, launcher_state)
         try:
             completed = subprocess.run(supervisor_cmd, cwd=REPO_ROOT, check=False)
         finally:
@@ -574,7 +633,7 @@ def main() -> None:
             launcher_state["status"] = "running"
             launcher_state["mode"] = "detached_systemd"
             write_json(runs_dir / "launcher_state.json", launcher_state)
-            write_json(latest_job_json, launcher_state)
+            write_latest_job_record_if_current(latest_job_json, launcher_state)
             log_handle.write(completed.stdout)
             if completed.stderr:
                 log_handle.write(completed.stderr)
@@ -640,14 +699,14 @@ def main() -> None:
     launcher_state["pid"] = int(pid_text) if pid_text.isdigit() else 0
     launcher_state["status"] = "running" if launcher_state["pid"] else "launched_pid_unknown"
     write_json(runs_dir / "launcher_state.json", launcher_state)
-    write_json(latest_job_json, launcher_state)
+    write_latest_job_record_if_current(latest_job_json, launcher_state)
     log_handle.flush()
     log_handle.close()
 
     if not wait_for_supervisor_bootstrap(runs_dir):
         launcher_state["status"] = "launch_failed_no_supervisor_state"
         write_json(runs_dir / "launcher_state.json", launcher_state)
-        write_json(latest_job_json, launcher_state)
+        write_latest_job_record_if_current(latest_job_json, launcher_state)
         raise SystemExit(
             "Detached supervisor launch did not create supervisor_state.json or supervisor_events.log "
             "within the startup wait window."

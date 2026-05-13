@@ -27,6 +27,9 @@ STARTUP_RESPAWN_BATCHES_CSV = "startup_respawn_batches.csv"
 STARTUP_RESPAWN_BATCHES_MD = "startup_respawn_batches.md"
 HEADER_ONLY_RERUN_BATCHES_CSV = "header_only_rerun_batches.csv"
 HEADER_ONLY_RERUN_BATCHES_MD = "header_only_rerun_batches.md"
+GLOBAL_RETRY_PENDING_BATCHES_CSV = DEFAULT_FINAL_DIR / "retry_pending_batches.csv"
+GLOBAL_SCHEMA_ERROR_BATCHES_CSV = DEFAULT_FINAL_DIR / "schema_error_batches.csv"
+GLOBAL_COLLECT_BLOCKED_BATCHES_CSV = DEFAULT_FINAL_DIR / "collect_blocked_batches.csv"
 DEFAULT_STARTUP_NO_ROW_TIMEOUT_SECONDS = 300
 DEFAULT_HEADER_ONLY_TIMEOUT_SECONDS = 300
 
@@ -155,8 +158,27 @@ BLOCKING_VERIFICATION_ACTIONS = {
     "update_prompt_or_process",
 }
 
-RUNTIME_ACTIVE_STATUSES = {"prepared", "running", "needs_rerun", "completed", "deferred_long_tail"}
-RUNTIME_RESOLVED_STATUSES = {"completed", "deferred_long_tail"}
+PARTIAL_COMPLETE_RETRY_PENDING_STATUS = "partial_complete_retry_pending"
+WORKER_FAILED_RETRY_PENDING_STATUS = "worker_failed_retry_pending"
+SCHEMA_ERROR_QUARANTINED_STATUS = "schema_error_quarantined"
+COLLECT_BLOCKED_STATUS = "collect_blocked"
+NONBLOCKING_FAILURE_STATUSES = {
+    PARTIAL_COMPLETE_RETRY_PENDING_STATUS,
+    WORKER_FAILED_RETRY_PENDING_STATUS,
+    SCHEMA_ERROR_QUARANTINED_STATUS,
+    COLLECT_BLOCKED_STATUS,
+}
+RETRY_CAPPED_STATUS = "retry_capped"
+RUNTIME_ACTIVE_STATUSES = {
+    "prepared",
+    "running",
+    "needs_rerun",
+    "completed",
+    "deferred_long_tail",
+    RETRY_CAPPED_STATUS,
+    *NONBLOCKING_FAILURE_STATUSES,
+}
+RUNTIME_RESOLVED_STATUSES = {"completed", "deferred_long_tail", RETRY_CAPPED_STATUS, *NONBLOCKING_FAILURE_STATUSES}
 RUNTIME_FAILURE_ALIASES = {
     "startup_no_first_row_timeout": "startup_no_row",
     "header_only_timeout_both_outputs": "header_only_timeout",
@@ -169,6 +191,10 @@ RUNTIME_FAILURE_ALIASES = {
     "rerun_company": "verifier_forced_rerun",
     "rerun_batch": "verifier_forced_rerun",
 }
+SPLIT_SHARDS_DIR_NAME = "split_recovery"
+SPLIT_MERGED_CLASSIFIER_FILE_NAME = "merged_classifier_results.csv"
+SPLIT_MERGED_RESULTS_FILE_NAME = "merged_results.csv"
+SPLIT_MERGE_MANIFEST_FILE_NAME = "merge_manifest.json"
 
 
 def canonicalize_runtime_failure_reasons(reason: str) -> list[str]:
@@ -421,7 +447,19 @@ def is_deferred_long_tail_row(row: dict[str, str]) -> bool:
     return completion_mode == "deferred_long_tail"
 
 
+def is_retry_capped_row(row: dict[str, str]) -> bool:
+    status = normalize_runtime_status(row.get("status", ""), row.get("started_at", ""))
+    completion_mode = (row.get("completion_mode") or "").strip()
+    if status == RETRY_CAPPED_STATUS:
+        return True
+    if status in {"completed", "deferred_long_tail"}:
+        return False
+    return completion_mode == RETRY_CAPPED_STATUS
+
+
 def effective_runtime_status(row: dict[str, str]) -> str:
+    if is_retry_capped_row(row):
+        return RETRY_CAPPED_STATUS
     if is_deferred_long_tail_row(row):
         return "deferred_long_tail"
     return normalize_runtime_status(row.get("status", ""), row.get("started_at", ""))
@@ -628,11 +666,16 @@ def load_attempt_metadata(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def inspect_attempt_candidate(schedule_row: dict[str, str], attempt_dir: Path) -> dict[str, Any]:
+def inspect_candidate_output_paths(
+    schedule_row: dict[str, str],
+    *,
+    attempt_dir: Path,
+    classifier_path: Path,
+    results_path: Path,
+    instructions_path: Path,
+) -> dict[str, Any]:
     tasks = load_tasks_jsonl(ensure_file(resolve_path(schedule_row["tasks_file"]), "Tasks JSONL"))
     expected_rows = parse_optional_int(schedule_row.get("task_count"), default=0)
-    classifier_path = attempt_dir / "classifier_results.csv"
-    results_path = attempt_dir / "results.csv"
     classifier_rows, classifier_header_ok, classifier_data = 0, False, []
     result_rows, results_header_ok, result_data = 0, False, []
     if classifier_path.exists() and classifier_path.is_file():
@@ -652,20 +695,19 @@ def inspect_attempt_candidate(schedule_row: dict[str, str], attempt_dir: Path) -
             prefix_valid = False
             break
         prefix_len += 1
-    if compare_count < max(classifier_rows, result_rows):
-        prefix_valid = False
+    fully_aligned = prefix_valid and compare_count == max(classifier_rows, result_rows)
 
-    if prefix_valid and classifier_rows == expected_rows and result_rows == expected_rows:
+    if fully_aligned and classifier_rows == expected_rows and result_rows == expected_rows:
         state = "completed"
     elif classifier_rows == 0 and result_rows == 0 and classifier_header_ok and results_header_ok:
         state = "header_only"
-    elif prefix_valid and prefix_len > 0:
+    elif fully_aligned and prefix_len > 0:
         state = "partial_prefix"
     else:
         state = "partial_misaligned"
 
     last_activity = 0.0
-    for path in [classifier_path, results_path, attempt_metadata_path(attempt_dir), attempt_dir / "worker_instructions.md"]:
+    for path in [classifier_path, results_path, attempt_metadata_path(attempt_dir), instructions_path]:
         if path.exists():
             try:
                 last_activity = max(last_activity, path.stat().st_mtime)
@@ -678,13 +720,45 @@ def inspect_attempt_candidate(schedule_row: dict[str, str], attempt_dir: Path) -
         "metadata": load_attempt_metadata(attempt_metadata_path(attempt_dir)),
         "classifier_path": classifier_path,
         "results_path": results_path,
-        "instructions_path": attempt_dir / "worker_instructions.md",
+        "instructions_path": instructions_path,
+        "source_kind": "attempt",
         "prefix_len": prefix_len,
+        "prefix_valid": prefix_valid,
+        "fully_aligned": fully_aligned,
         "classifier_rows": classifier_rows,
         "result_rows": result_rows,
         "state": state,
         "last_activity": last_activity,
     }
+
+
+def inspect_attempt_candidate(schedule_row: dict[str, str], attempt_dir: Path) -> dict[str, Any]:
+    return inspect_candidate_output_paths(
+        schedule_row,
+        attempt_dir=attempt_dir,
+        classifier_path=attempt_dir / "classifier_results.csv",
+        results_path=attempt_dir / "results.csv",
+        instructions_path=attempt_dir / "worker_instructions.md",
+    )
+
+
+def inspect_split_merged_candidate(schedule_row: dict[str, str], attempt_dir: Path) -> dict[str, Any] | None:
+    split_root = attempt_dir / SPLIT_SHARDS_DIR_NAME
+    merge_manifest = split_root / SPLIT_MERGE_MANIFEST_FILE_NAME
+    classifier_path = split_root / SPLIT_MERGED_CLASSIFIER_FILE_NAME
+    results_path = split_root / SPLIT_MERGED_RESULTS_FILE_NAME
+    if not merge_manifest.exists() and not (classifier_path.exists() and results_path.exists()):
+        return None
+    candidate = inspect_candidate_output_paths(
+        schedule_row,
+        attempt_dir=attempt_dir,
+        classifier_path=classifier_path,
+        results_path=results_path,
+        instructions_path=attempt_dir / "worker_instructions.md",
+    )
+    candidate["source_kind"] = "split_merged"
+    candidate["merge_manifest_path"] = merge_manifest
+    return candidate
 
 
 def attempt_candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, int, int, float, int]:
@@ -694,8 +768,10 @@ def attempt_candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, int, int
         "header_only": 1,
         "partial_misaligned": 0,
     }.get(str(candidate.get("state", "")), 0)
+    source_rank = 1 if str(candidate.get("source_kind") or "") == "split_merged" else 0
     return (
         state_rank,
+        source_rank,
         parse_optional_int(candidate.get("prefix_len"), default=0),
         min(
             parse_optional_int(candidate.get("classifier_rows"), default=0),
@@ -718,11 +794,14 @@ def reconcile_schedule_attempts(schedule_rows: list[dict[str, str]]) -> list[dic
         if not attempts_dir.exists() or not attempts_dir.is_dir():
             updated_rows.append(updated)
             continue
-        candidates = [
-            inspect_attempt_candidate(updated, path)
-            for path in sorted(attempts_dir.iterdir(), key=attempt_index_from_dir)
-            if path.is_dir() and re.match(r"attempt_\d+$", path.name)
-        ]
+        candidates: list[dict[str, Any]] = []
+        for path in sorted(attempts_dir.iterdir(), key=attempt_index_from_dir):
+            if not path.is_dir() or not re.match(r"attempt_\d+$", path.name):
+                continue
+            candidates.append(inspect_attempt_candidate(updated, path))
+            split_candidate = inspect_split_merged_candidate(updated, path)
+            if split_candidate is not None:
+                candidates.append(split_candidate)
         if not candidates:
             updated_rows.append(updated)
             continue
@@ -819,8 +898,8 @@ def inspect_batch_outputs(schedule_row: dict[str, str]) -> dict[str, object]:
     )
 
     current_status = effective_runtime_status(schedule_row)
-    if current_status == "deferred_long_tail":
-        schedule_status = "deferred_long_tail"
+    if current_status in {"deferred_long_tail", RETRY_CAPPED_STATUS, *NONBLOCKING_FAILURE_STATUSES}:
+        schedule_status = current_status
     elif (
         classifier_state["state"] == "completed"
         and results_state["state"] == "completed"
@@ -985,6 +1064,14 @@ def validate_json_list(value: str) -> bool:
     except json.JSONDecodeError:
         return False
     return isinstance(parsed, list)
+
+
+def parse_json_list(value: str) -> list[Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def json_list_length(value: str) -> int:
@@ -1871,6 +1958,23 @@ def infer_rerun_category(error: str) -> str | None:
     return None
 
 
+def schedule_row_progress_rows(schedule_row: dict[str, str]) -> int:
+    return max(
+        parse_optional_int(schedule_row.get("last_seen_classifier_rows"), default=0),
+        parse_optional_int(schedule_row.get("last_seen_result_rows"), default=0),
+        parse_optional_int(schedule_row.get("best_valid_classifier_rows"), default=0),
+        parse_optional_int(schedule_row.get("best_valid_result_rows"), default=0),
+    )
+
+
+def classify_backlog_status(schedule_row: dict[str, str], reasons: set[str]) -> str:
+    if any(reason in {"schema_error", "severe_schema_error"} for reason in reasons):
+        return SCHEMA_ERROR_QUARANTINED_STATUS
+    if schedule_row_progress_rows(schedule_row) > 0:
+        return PARTIAL_COMPLETE_RETRY_PENDING_STATUS
+    return WORKER_FAILED_RETRY_PENDING_STATUS
+
+
 def analyze_lint_failures(
     schedule_rows: list[dict[str, str]],
     validation_errors: list[str],
@@ -1933,11 +2037,12 @@ def analyze_lint_failures(
 
         schedule_row = dict(bucket["row"])
         reasons = sorted(categories)
+        status = classify_backlog_status(schedule_row, categories)
         rerun_rows.append(
             {
                 "batch_file": batch_key,
                 "run_dir": str(schedule_row.get("run_dir") or ""),
-                "status": "needs_rerun",
+                "status": status,
                 "first_task_index": str(schedule_row.get("first_task_index") or ""),
                 "last_task_index": str(schedule_row.get("last_task_index") or ""),
                 "reason": "|".join(reasons),
@@ -1990,7 +2095,7 @@ def analyze_header_only_timeouts(
                 "round_index": str(round_index),
                 "batch_file": str(schedule_row.get("batch_file") or ""),
                 "run_dir": str(schedule_row.get("run_dir") or ""),
-                "status": "needs_rerun",
+                "status": WORKER_FAILED_RETRY_PENDING_STATUS,
                 "first_task_index": str(schedule_row.get("first_task_index") or ""),
                 "last_task_index": str(schedule_row.get("last_task_index") or ""),
                 "reason": reason,
@@ -2042,7 +2147,7 @@ def analyze_startup_no_row_timeouts(
                 "round_index": str(round_index),
                 "batch_file": str(schedule_row.get("batch_file") or ""),
                 "run_dir": str(schedule_row.get("run_dir") or ""),
-                "status": "needs_rerun",
+                "status": WORKER_FAILED_RETRY_PENDING_STATUS,
                 "first_task_index": str(schedule_row.get("first_task_index") or ""),
                 "last_task_index": str(schedule_row.get("last_task_index") or ""),
                 "reason": "startup_no_first_row_timeout",
@@ -2065,7 +2170,7 @@ def mark_rerun_batches_in_schedule(
     schedule_csv: Path,
     schedule_rows: list[dict[str, str]],
     rerun_rows: list[dict[str, str]],
-) -> None:
+) -> list[dict[str, str]]:
     rerun_by_batch = {row["batch_file"]: row for row in rerun_rows}
     rerun_batches = set(rerun_by_batch)
     rerun_timestamp = datetime.now(timezone.utc).isoformat()
@@ -2086,12 +2191,14 @@ def mark_rerun_batches_in_schedule(
         if row.get("batch_file") in rerun_batches:
             rerun_row = rerun_by_batch.get(str(row.get("batch_file") or "")) or {}
             failure_type = map_rerun_reason_to_failure_type(str(rerun_row.get("reason", "")))
+            target_status = str(rerun_row.get("status") or "needs_rerun")
             counts = parse_failure_counts_json(updated.get("failure_counts_json", ""))
             failure_tokens = canonicalize_runtime_failure_reasons(failure_type)
             for failure_token in failure_tokens:
                 counts[failure_token] = counts.get(failure_token, 0) + 1
-            updated["status"] = "needs_rerun"
-            updated["prepared_reason"] = failure_type
+            updated["status"] = target_status
+            updated["completion_mode"] = target_status if target_status in NONBLOCKING_FAILURE_STATUSES else updated.get("completion_mode", "")
+            updated["prepared_reason"] = "" if target_status in NONBLOCKING_FAILURE_STATUSES else failure_type
             updated["last_failure_type"] = failure_type
             updated["failure_counts_json"] = encode_failure_counts_json(counts)
             updated["consecutive_no_progress_attempts"] = str(
@@ -2102,14 +2209,20 @@ def mark_rerun_batches_in_schedule(
             )
             updated["last_rerun_reason"] = failure_type
             updated["last_rerun_at"] = rerun_timestamp
+            updated["collect_failure_reason"] = failure_type
             prefix_rows = max(
                 parse_optional_int(updated.get("last_seen_classifier_rows"), default=0),
                 parse_optional_int(updated.get("last_seen_result_rows"), default=0),
             )
-            if any(token in {"schema_error", "verifier_forced_rerun"} for token in failure_tokens):
-                updated["prepared_mode"] = "fresh_restart"
+            if target_status in NONBLOCKING_FAILURE_STATUSES:
+                updated["prepared_mode"] = ""
+                updated["queue_state"] = target_status
+                updated["collect_state"] = "skipped"
             else:
-                updated["prepared_mode"] = "continue_from_prefix" if prefix_rows > 0 else "fresh_restart"
+                if any(token in {"schema_error", "verifier_forced_rerun"} for token in failure_tokens):
+                    updated["prepared_mode"] = "fresh_restart"
+                else:
+                    updated["prepared_mode"] = "continue_from_prefix" if prefix_rows > 0 else "fresh_restart"
         else:
             updated["respawn_count"] = str(parse_optional_int(updated.get("respawn_count"), default=0))
             updated["last_rerun_reason"] = str(updated.get("last_rerun_reason", ""))
@@ -2119,6 +2232,7 @@ def mark_rerun_batches_in_schedule(
             )
         updated_rows.append(updated)
     write_schedule_rows(schedule_csv, updated_rows)
+    return updated_rows
 
 
 def write_lint_rerun_plan(runs_dir: Path, rerun_rows: list[dict[str, str]]) -> None:
@@ -2160,6 +2274,61 @@ def write_lint_rerun_plan(runs_dir: Path, rerun_rows: list[dict[str, str]]) -> N
             ]
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def backlog_entry_from_row(row: dict[str, str]) -> dict[str, str]:
+    return {
+        "batch_file": str(row.get("batch_file") or ""),
+        "run_dir": str(row.get("run_dir") or ""),
+        "status": str(row.get("status") or effective_runtime_status(row)),
+        "first_task_index": str(row.get("first_task_index") or ""),
+        "last_task_index": str(row.get("last_task_index") or ""),
+        "reason": str(row.get("reason") or row.get("collect_failure_reason") or row.get("last_failure_type") or ""),
+        "error_count": str(row.get("error_count") or ""),
+        "sample_errors": str(row.get("sample_errors") or ""),
+        "idle_seconds": str(row.get("idle_seconds") or ""),
+        "timeout_seconds": str(row.get("timeout_seconds") or ""),
+        "last_activity_utc": str(row.get("last_activity_utc") or ""),
+        "classifier_state": str(row.get("classifier_state") or ""),
+        "results_state": str(row.get("results_state") or ""),
+    }
+
+
+def write_backlog_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        if path.exists():
+            path.unlink()
+        return
+    columns = [
+        "batch_file",
+        "run_dir",
+        "status",
+        "first_task_index",
+        "last_task_index",
+        "reason",
+        "error_count",
+        "sample_errors",
+        "idle_seconds",
+        "timeout_seconds",
+        "last_activity_utc",
+        "classifier_state",
+        "results_state",
+    ]
+    write_csv(path, columns, [backlog_entry_from_row(row) for row in rows])
+
+
+def write_global_failure_backlogs(rows: list[dict[str, str]]) -> None:
+    retry_pending_rows = [
+        row
+        for row in rows
+        if effective_runtime_status(row) in {PARTIAL_COMPLETE_RETRY_PENDING_STATUS, WORKER_FAILED_RETRY_PENDING_STATUS}
+    ]
+    schema_error_rows = [row for row in rows if effective_runtime_status(row) == SCHEMA_ERROR_QUARANTINED_STATUS]
+    collect_blocked_rows = [row for row in rows if effective_runtime_status(row) == COLLECT_BLOCKED_STATUS]
+    write_backlog_csv(GLOBAL_RETRY_PENDING_BATCHES_CSV, retry_pending_rows)
+    write_backlog_csv(GLOBAL_SCHEMA_ERROR_BATCHES_CSV, schema_error_rows)
+    write_backlog_csv(GLOBAL_COLLECT_BLOCKED_BATCHES_CSV, collect_blocked_rows)
 
 
 def write_header_only_rerun_plan(
@@ -2451,7 +2620,8 @@ def main() -> None:
             rerun_rows=startup_respawn_rows,
         )
         if schedule_rows != loaded_schedule_rows or startup_respawn_rows:
-            mark_rerun_batches_in_schedule(schedule_csv, schedule_rows, startup_respawn_rows)
+            schedule_rows = mark_rerun_batches_in_schedule(schedule_csv, schedule_rows, startup_respawn_rows)
+            write_global_failure_backlogs(schedule_rows)
 
         incomplete_rounds = get_incomplete_rounds(schedule_rows)
         print(f"Schedule CSV: {schedule_csv}")
@@ -2461,13 +2631,13 @@ def main() -> None:
         print(f"Auto respawn batches: {len(startup_respawn_rows)}")
         for row in startup_respawn_rows[:20]:
             print(
-                f"- needs_rerun: {Path(row['batch_file']).name} "
+                f"- {row['status']}: {Path(row['batch_file']).name} "
                 f"({row['reason']}, idle={row['idle_seconds']}s)"
             )
         if startup_respawn_rows:
             print(f"Respawn plan CSV: {runs_dir / STARTUP_RESPAWN_BATCHES_CSV}")
             raise SystemExit(
-                "Startup no-row timeout detected. Auto-marked needs_rerun rows in schedule.csv."
+                "Startup no-row timeout detected. Auto-marked backlog rows in schedule.csv."
             )
         return
 
@@ -2485,7 +2655,8 @@ def main() -> None:
             rerun_rows=header_only_rerun_rows,
         )
         if schedule_rows != loaded_schedule_rows or header_only_rerun_rows:
-            mark_rerun_batches_in_schedule(schedule_csv, schedule_rows, header_only_rerun_rows)
+            schedule_rows = mark_rerun_batches_in_schedule(schedule_csv, schedule_rows, header_only_rerun_rows)
+            write_global_failure_backlogs(schedule_rows)
 
         incomplete_rounds = get_incomplete_rounds(schedule_rows)
         print(f"Schedule CSV: {schedule_csv}")
@@ -2495,13 +2666,13 @@ def main() -> None:
         print(f"Auto rerun batches: {len(header_only_rerun_rows)}")
         for row in header_only_rerun_rows[:20]:
             print(
-                f"- needs_rerun: {Path(row['batch_file']).name} "
+                f"- {row['status']}: {Path(row['batch_file']).name} "
                 f"({row['reason']}, idle={row['idle_seconds']}s)"
             )
         if header_only_rerun_rows:
             print(f"Rerun plan CSV: {runs_dir / HEADER_ONLY_RERUN_BATCHES_CSV}")
             raise SystemExit(
-                "Header-only timeout detected. Auto-marked needs_rerun rows in schedule.csv."
+                "Header-only timeout detected. Auto-marked backlog rows in schedule.csv."
             )
         return
 
@@ -2613,14 +2784,15 @@ def main() -> None:
     lint_rerun_rows = analyze_lint_failures(pipeline_schedule_rows, validation_errors)
     write_lint_rerun_plan(runs_dir, lint_rerun_rows)
     if lint_rerun_rows:
-        mark_rerun_batches_in_schedule(schedule_csv, schedule_rows, lint_rerun_rows)
+        schedule_rows = mark_rerun_batches_in_schedule(schedule_csv, schedule_rows, lint_rerun_rows)
+        write_global_failure_backlogs(schedule_rows)
 
     if args.lint_only:
         if validation_errors and not args.allow_partial:
             if lint_rerun_rows:
                 print("Auto-marked rerun batches:")
                 for row in lint_rerun_rows[:20]:
-                    print(f"- {Path(row['batch_file']).name}: {row['reason']} (errors={row['error_count']})")
+                    print(f"- {row['status']}: {Path(row['batch_file']).name}: {row['reason']} (errors={row['error_count']})")
                 if len(lint_rerun_rows) > 20:
                     print(f"- ... {len(lint_rerun_rows) - 20} more batches")
                 print(f"Rerun plan CSV: {runs_dir / AUTO_RERUN_BATCHES_CSV}")
@@ -2629,7 +2801,7 @@ def main() -> None:
                 print(f"- {error}")
             if len(validation_errors) > 80:
                 print(f"- ... {len(validation_errors) - 80} more")
-            raise SystemExit("Lint failed. Auto-marked needs_rerun rows in schedule.csv where applicable.")
+            raise SystemExit("Lint failed. Auto-marked backlog rows in schedule.csv where applicable.")
         print(f"Lint schedule CSV: {schedule_csv}")
         if scoped_round_indexes:
             print(f"Lint round scope: {','.join(str(value) for value in scoped_round_indexes)}")
@@ -2644,7 +2816,7 @@ def main() -> None:
         for row in deferred_long_tail_rows[:20]:
             print(f"- deferred_long_tail: {Path(row['batch_file']).name}")
         for row in lint_rerun_rows[:20]:
-            print(f"- needs_rerun: {Path(row['batch_file']).name} ({row['reason']})")
+            print(f"- {row['status']}: {Path(row['batch_file']).name} ({row['reason']})")
         print(f"Identity repair files: {len(repaired_identity_files)}")
         for path in repaired_identity_files[:20]:
             print(f"- repaired: {path}")

@@ -6,7 +6,8 @@ import csv
 import json
 import re
 import shutil
-from datetime import datetime, timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ RUNTIME_DIR = PART4_DIR / "runtime"
 DEFAULT_RUNS_DIR = PART4_DIR / "agent_runs" / "token_company_parallel"
 DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
 WORKER_BASE_TEMPLATE_PATH = RUNTIME_DIR / "worker_base_template.md"
+SAFE_CSV_APPEND_SCRIPT_PATH = SCRIPT_DIR / "part4_safe_csv_append.py"
 
 RESULT_CSV_COLUMNS = [
     "task_index",
@@ -78,6 +80,22 @@ RUNTIME_DEFAULTS = {
     "round_entry_started_at": "",
     "first_row_at": "",
     "last_progress_at": "",
+    "health_state": "",
+    "last_worker_activity_at": "",
+    "last_worker_activity_type": "",
+    "last_worker_activity_source": "",
+    "soft_timeout_warned_at": "",
+    "last_timeout_warning_reason": "",
+    "next_eligible_retry_at": "",
+    "reconciled_dir": "",
+    "best_valid_classifier_results_csv": "",
+    "best_valid_results_csv": "",
+    "best_valid_progress_manifest_json": "",
+    "best_valid_classifier_rows": "0",
+    "best_valid_result_rows": "0",
+    "best_valid_attempt_index": "0",
+    "best_valid_updated_at": "",
+    "best_valid_source": "",
     "last_seen_classifier_rows": "0",
     "last_seen_result_rows": "0",
     "active_lease_file": "",
@@ -139,6 +157,9 @@ ACTION_COLUMNS = [
 
 WRAPPER_BEGIN = "--- BEGIN BASE INSTRUCTIONS ---"
 WRAPPER_END = "--- END BASE INSTRUCTIONS ---"
+WORKER_ACTIVITY_TAIL_LINES = 120
+STRONG_WORKER_ACTIVITY_TYPES = {"web_search", "file_change", "agent_message"}
+ANY_WORKER_ACTIVITY_TYPES = STRONG_WORKER_ACTIVITY_TYPES | {"command_execution"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -402,7 +423,18 @@ def encode_failure_counts(counts: dict[str, int]) -> str:
 
 def normalize_status(status: str, started_at: str) -> str:
     raw = (status or "").strip()
-    if raw in {"prepared", "running", "needs_rerun", "completed", "deferred_long_tail"}:
+    if raw in {
+        "prepared",
+        "running",
+        "needs_rerun",
+        "completed",
+        "deferred_long_tail",
+        "retry_capped",
+        "partial_complete_retry_pending",
+        "worker_failed_retry_pending",
+        "schema_error_quarantined",
+        "collect_blocked",
+    }:
         return raw
     if raw in {"pending", "pending_launch", ""}:
         return "prepared"
@@ -474,6 +506,148 @@ def count_rows(path: Path, expected_header: list[str]) -> tuple[int, bool, list[
     return len(rows), header == expected_header, rows
 
 
+def read_last_lines(path: Path, limit: int) -> list[str]:
+    tail: deque[str] = deque(maxlen=max(limit, 1))
+    with path.open("r", encoding="utf-8", errors="replace") as infile:
+        for line in infile:
+            tail.append(line.rstrip("\n"))
+    return list(tail)
+
+
+def path_mtime_iso(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    except OSError:
+        return ""
+
+
+def worker_log_path_for_row(row: dict[str, str]) -> Path:
+    return active_attempt_dir_for_row(row) / "supervisor_worker.log"
+
+
+def inspect_worker_log_activity(log_path: Path, *, tail_lines: int = WORKER_ACTIVITY_TAIL_LINES) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "available": False,
+        "last_activity_at": "",
+        "last_activity_type": "",
+        "last_activity_source": "",
+        "activity_signal_count": 0,
+        "strong_activity_count": 0,
+    }
+    if not log_path.exists() or not log_path.is_file():
+        return summary
+
+    summary["available"] = True
+    summary["last_activity_at"] = path_mtime_iso(log_path)
+    last_activity_type = ""
+    last_activity_source = ""
+    activity_signal_count = 0
+    strong_activity_count = 0
+    for line in read_last_lines(log_path, tail_lines):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or str(payload.get("type") or "").strip() != "item.completed":
+            continue
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip()
+        if not item_type or item_type not in ANY_WORKER_ACTIVITY_TYPES:
+            continue
+        activity_signal_count += 1
+        last_activity_type = item_type
+        if item_type in STRONG_WORKER_ACTIVITY_TYPES:
+            strong_activity_count += 1
+            last_activity_source = "strong_signal"
+        elif not last_activity_source:
+            last_activity_source = "command_signal"
+
+    summary["activity_signal_count"] = activity_signal_count
+    summary["strong_activity_count"] = strong_activity_count
+    summary["last_activity_type"] = last_activity_type
+    summary["last_activity_source"] = last_activity_source
+    return summary
+
+
+def parse_timeout_profile(
+    policy: dict[str, Any],
+    *,
+    startup_timeout_seconds: int,
+    partial_stall_timeout_seconds: int,
+) -> dict[str, int]:
+    timeouts = policy.get("timeouts", {}) or {}
+
+    startup_soft = startup_timeout_seconds or parse_optional_int(
+        timeouts.get("startup_no_row_soft_seconds"),
+        parse_optional_int(timeouts.get("startup_no_row_seconds"), 480),
+    )
+    startup_hard = parse_optional_int(
+        timeouts.get("startup_no_row_hard_seconds"),
+        max(startup_soft, 1200 if startup_soft <= 480 else startup_soft * 2),
+    )
+    if startup_hard < startup_soft:
+        startup_hard = startup_soft
+
+    stall_soft = partial_stall_timeout_seconds or parse_optional_int(
+        timeouts.get("partial_stall_soft_seconds"),
+        parse_optional_int(timeouts.get("partial_stall_seconds"), 240),
+    )
+    stall_hard = parse_optional_int(
+        timeouts.get("partial_stall_hard_seconds"),
+        max(stall_soft, 900 if stall_soft <= 240 else stall_soft * 3),
+    )
+    if stall_hard < stall_soft:
+        stall_hard = stall_soft
+
+    activity_grace = parse_optional_int(
+        timeouts.get("worker_activity_grace_seconds"),
+        max(180, min(startup_hard, max(stall_soft, 300))),
+    )
+    if activity_grace <= 0:
+        activity_grace = 300
+
+    return {
+        "startup_soft_seconds": startup_soft,
+        "startup_hard_seconds": startup_hard,
+        "stall_soft_seconds": stall_soft,
+        "stall_hard_seconds": stall_hard,
+        "activity_grace_seconds": activity_grace,
+    }
+
+
+def activity_is_recent(activity: dict[str, Any], current_time: datetime, *, grace_seconds: int) -> bool:
+    if grace_seconds <= 0:
+        return False
+    last_activity_at = parse_iso(str(activity.get("last_activity_at") or ""))
+    if last_activity_at is None:
+        return False
+    if parse_optional_int(activity.get("activity_signal_count"), 0) <= 0:
+        return False
+    return (current_time - last_activity_at).total_seconds() <= grace_seconds
+
+
+def clear_health_warning_fields(row: dict[str, str]) -> dict[str, str]:
+    updated = dict(row)
+    updated["soft_timeout_warned_at"] = ""
+    updated["last_timeout_warning_reason"] = ""
+    updated["next_eligible_retry_at"] = ""
+    return updated
+
+
+def update_worker_activity_fields(row: dict[str, str], activity: dict[str, Any]) -> dict[str, str]:
+    updated = dict(row)
+    updated["last_worker_activity_at"] = str(activity.get("last_activity_at") or "")
+    updated["last_worker_activity_type"] = str(activity.get("last_activity_type") or "")
+    updated["last_worker_activity_source"] = str(activity.get("last_activity_source") or "")
+    return updated
+
+
 def batch_root(row: dict[str, str]) -> Path:
     return resolve_path(row["run_dir"])
 
@@ -490,6 +664,190 @@ def active_attempt_dir_for_row(row: dict[str, str]) -> Path:
     if raw:
         return resolve_path(raw)
     return attempts_dir_for_row(row) / f"attempt_{parse_optional_int(row.get('attempt_index'), 1):04d}"
+
+
+def reconciled_dir_for_row(row: dict[str, str]) -> Path:
+    raw = (row.get("reconciled_dir") or "").strip()
+    if raw:
+        return resolve_path(raw)
+    return batch_root(row) / "reconciled"
+
+
+def best_valid_classifier_path_for_row(row: dict[str, str]) -> Path:
+    raw = (row.get("best_valid_classifier_results_csv") or "").strip()
+    if raw:
+        return resolve_path(raw)
+    return reconciled_dir_for_row(row) / "best_valid_classifier_results.csv"
+
+
+def best_valid_results_path_for_row(row: dict[str, str]) -> Path:
+    raw = (row.get("best_valid_results_csv") or "").strip()
+    if raw:
+        return resolve_path(raw)
+    return reconciled_dir_for_row(row) / "best_valid_results.csv"
+
+
+def best_valid_manifest_path_for_row(row: dict[str, str]) -> Path:
+    raw = (row.get("best_valid_progress_manifest_json") or "").strip()
+    if raw:
+        return resolve_path(raw)
+    return reconciled_dir_for_row(row) / "progress_manifest.json"
+
+
+def normalized_best_valid_manifest(row: dict[str, str], payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    return {
+        "batch_file": str(payload.get("batch_file") or row.get("batch_file") or ""),
+        "best_valid_classifier_rows": parse_optional_int(payload.get("best_valid_classifier_rows"), 0),
+        "best_valid_result_rows": parse_optional_int(payload.get("best_valid_result_rows"), 0),
+        "best_valid_attempt_index": parse_optional_int(payload.get("best_valid_attempt_index"), 0),
+        "best_valid_updated_at": str(payload.get("best_valid_updated_at") or ""),
+        "best_valid_source": str(payload.get("best_valid_source") or ""),
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+
+
+def ensure_best_valid_artifacts(row: dict[str, str]) -> None:
+    reconciled_dir = reconciled_dir_for_row(row)
+    classifier_path = best_valid_classifier_path_for_row(row)
+    results_path = best_valid_results_path_for_row(row)
+    manifest_path = best_valid_manifest_path_for_row(row)
+    reconciled_dir.mkdir(parents=True, exist_ok=True)
+    if not classifier_path.exists():
+        write_csv(classifier_path, CLASSIFIER_CSV_COLUMNS, [])
+    if not results_path.exists():
+        write_csv(results_path, RESULT_CSV_COLUMNS, [])
+    if not manifest_path.exists():
+        write_json(manifest_path, normalized_best_valid_manifest(row))
+
+
+def load_best_valid_manifest(row: dict[str, str]) -> dict[str, Any]:
+    ensure_best_valid_artifacts(row)
+    manifest_path = best_valid_manifest_path_for_row(row)
+    try:
+        payload = load_json(manifest_path)
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    manifest = normalized_best_valid_manifest(row, payload)
+    write_json(manifest_path, manifest)
+    return manifest
+
+
+def write_best_valid_manifest(
+    row: dict[str, str],
+    *,
+    classifier_rows: int,
+    result_rows: int,
+    attempt_index: int,
+    updated_at: str,
+    source: str,
+) -> dict[str, Any]:
+    manifest = normalized_best_valid_manifest(
+        row,
+        {
+            "batch_file": str(row.get("batch_file") or ""),
+            "best_valid_classifier_rows": max(classifier_rows, 0),
+            "best_valid_result_rows": max(result_rows, 0),
+            "best_valid_attempt_index": max(attempt_index, 0),
+            "best_valid_updated_at": updated_at,
+            "best_valid_source": source,
+            "updated_at": iso_now(),
+        },
+    )
+    write_json(best_valid_manifest_path_for_row(row), manifest)
+    return manifest
+
+
+def apply_best_valid_fields(row: dict[str, str], manifest: dict[str, Any]) -> dict[str, str]:
+    updated = dict(row)
+    updated["reconciled_dir"] = relative_path(reconciled_dir_for_row(updated))
+    updated["best_valid_classifier_results_csv"] = relative_path(best_valid_classifier_path_for_row(updated))
+    updated["best_valid_results_csv"] = relative_path(best_valid_results_path_for_row(updated))
+    updated["best_valid_progress_manifest_json"] = relative_path(best_valid_manifest_path_for_row(updated))
+    updated["best_valid_classifier_rows"] = str(parse_optional_int(manifest.get("best_valid_classifier_rows"), 0))
+    updated["best_valid_result_rows"] = str(parse_optional_int(manifest.get("best_valid_result_rows"), 0))
+    updated["best_valid_attempt_index"] = str(parse_optional_int(manifest.get("best_valid_attempt_index"), 0))
+    updated["best_valid_updated_at"] = str(manifest.get("best_valid_updated_at") or "")
+    updated["best_valid_source"] = str(manifest.get("best_valid_source") or "")
+    return updated
+
+
+def inspect_best_valid_snapshot(row: dict[str, str]) -> dict[str, Any]:
+    ensure_best_valid_artifacts(row)
+    snapshot_row = dict(row)
+    snapshot_row["classifier_results_csv"] = str(best_valid_classifier_path_for_row(row))
+    snapshot_row["results_csv"] = str(best_valid_results_path_for_row(row))
+    return inspect_row(snapshot_row)
+
+
+def reusable_prefix_len(inspection: dict[str, Any]) -> int:
+    if not inspection.get("prefix_valid"):
+        return 0
+    return parse_optional_int(inspection.get("prefix_len"), 0)
+
+
+def select_best_progress_inspection(primary: dict[str, Any], best_valid: dict[str, Any]) -> dict[str, Any]:
+    if str(best_valid.get("state") or "") == "completed" and str(primary.get("state") or "") != "completed":
+        return best_valid
+    if reusable_prefix_len(best_valid) > reusable_prefix_len(primary):
+        return best_valid
+    return primary
+
+
+def sync_best_valid_snapshot(
+    row: dict[str, str],
+    inspection: dict[str, Any],
+    *,
+    source: str,
+    attempt_index: int,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    updated = dict(row)
+    ensure_best_valid_artifacts(updated)
+    best_valid_snapshot = inspect_best_valid_snapshot(updated)
+    existing_prefix_len = reusable_prefix_len(best_valid_snapshot)
+    candidate_prefix_len = reusable_prefix_len(inspection)
+
+    if candidate_prefix_len > existing_prefix_len:
+        copy_prefix_rows(
+            inspection["classifier_path"],
+            best_valid_classifier_path_for_row(updated),
+            CLASSIFIER_CSV_COLUMNS,
+            candidate_prefix_len,
+        )
+        copy_prefix_rows(
+            inspection["results_path"],
+            best_valid_results_path_for_row(updated),
+            RESULT_CSV_COLUMNS,
+            candidate_prefix_len,
+        )
+        manifest = write_best_valid_manifest(
+            updated,
+            classifier_rows=candidate_prefix_len,
+            result_rows=candidate_prefix_len,
+            attempt_index=attempt_index,
+            updated_at=iso_now(),
+            source=source,
+        )
+        updated = apply_best_valid_fields(updated, manifest)
+        best_valid_snapshot = inspect_best_valid_snapshot(updated)
+        return updated, best_valid_snapshot
+
+    manifest = load_best_valid_manifest(updated)
+    actual_prefix_len = reusable_prefix_len(best_valid_snapshot)
+    if (
+        parse_optional_int(manifest.get("best_valid_classifier_rows"), 0) != actual_prefix_len
+        or parse_optional_int(manifest.get("best_valid_result_rows"), 0) != actual_prefix_len
+    ):
+        manifest = write_best_valid_manifest(
+            updated,
+            classifier_rows=actual_prefix_len,
+            result_rows=actual_prefix_len,
+            attempt_index=parse_optional_int(manifest.get("best_valid_attempt_index"), 0),
+            updated_at=str(manifest.get("best_valid_updated_at") or ""),
+            source=str(manifest.get("best_valid_source") or ""),
+        )
+    updated = apply_best_valid_fields(updated, manifest)
+    return updated, best_valid_snapshot
 
 
 def base_instructions_path_for_row(row: dict[str, str]) -> Path:
@@ -541,14 +899,13 @@ def inspect_attempt_dir(
             prefix_valid = False
             break
         prefix_len += 1
-    if compare_count < max(classifier_rows, result_rows):
-        prefix_valid = False
+    fully_aligned = prefix_valid and compare_count == max(classifier_rows, result_rows)
 
-    if prefix_valid and classifier_rows == expected_rows and result_rows == expected_rows:
+    if fully_aligned and classifier_rows == expected_rows and result_rows == expected_rows:
         state = "completed"
     elif classifier_rows == 0 and result_rows == 0 and classifier_header_ok and results_header_ok:
         state = "header_only"
-    elif prefix_valid and prefix_len > 0:
+    elif fully_aligned and prefix_len > 0:
         state = "partial_prefix"
     else:
         state = "partial_misaligned"
@@ -569,6 +926,7 @@ def inspect_attempt_dir(
         "result_data": result_data,
         "prefix_len": prefix_len,
         "prefix_valid": prefix_valid,
+        "fully_aligned": fully_aligned,
         "state": state,
         "last_activity": last_activity,
     }
@@ -649,6 +1007,12 @@ def reconcile_active_attempt(row: dict[str, str], policy: dict[str, Any]) -> tup
     candidates = [inspect_attempt_dir(path, tasks, expected_rows) for path in attempt_paths_for_row(updated)]
     if not candidates:
         inspection = inspect_row(updated)
+        updated, _ = sync_best_valid_snapshot(
+            updated,
+            inspection,
+            source=relative_path(active_attempt_dir_for_row(updated)),
+            attempt_index=parse_optional_int(updated.get("attempt_index"), 1),
+        )
         return updated, inspection
 
     best = max(candidates, key=attempt_candidate_sort_key)
@@ -725,6 +1089,12 @@ def reconcile_active_attempt(row: dict[str, str], policy: dict[str, Any]) -> tup
     updated["segment_hard_cap_rows"] = str(segment_values["hard_cap_rows_per_attempt"])
 
     inspection = inspect_row(updated)
+    updated, _ = sync_best_valid_snapshot(
+        updated,
+        inspection,
+        source=relative_path(attempt_dir),
+        attempt_index=parse_optional_int(updated.get("attempt_index"), 1),
+    )
     return updated, inspection
 
 
@@ -745,7 +1115,7 @@ def inspect_row(row: dict[str, str]) -> dict[str, Any]:
     tasks = load_tasks(resolve_path(row["tasks_file"]))
     prefix_len = 0
     compare_count = min(len(tasks), len(classifier_data), len(result_data))
-    prefix_valid = True
+    prefix_valid = classifier_header_ok and results_header_ok
     for index in range(compare_count):
         expected_task_index = str(tasks[index].get("task_index", ""))
         if classifier_data[index].get("task_index", "") != expected_task_index:
@@ -755,14 +1125,13 @@ def inspect_row(row: dict[str, str]) -> dict[str, Any]:
             prefix_valid = False
             break
         prefix_len += 1
-    if compare_count < max(classifier_rows, result_rows):
-        prefix_valid = False
+    fully_aligned = prefix_valid and compare_count == max(classifier_rows, result_rows)
 
-    if classifier_header_ok and results_header_ok and classifier_rows == expected_rows and result_rows == expected_rows:
+    if fully_aligned and classifier_rows == expected_rows and result_rows == expected_rows:
         state = "completed"
     elif classifier_rows == 0 and result_rows == 0:
         state = "header_only"
-    elif prefix_valid and prefix_len > 0:
+    elif fully_aligned and prefix_len > 0:
         state = "partial_prefix"
     else:
         state = "partial_misaligned"
@@ -777,6 +1146,7 @@ def inspect_row(row: dict[str, str]) -> dict[str, Any]:
         "result_data": result_data,
         "prefix_len": prefix_len,
         "prefix_valid": prefix_valid,
+        "fully_aligned": fully_aligned,
         "state": state,
         "last_activity": last_activity,
         "tasks": tasks,
@@ -860,6 +1230,7 @@ def render_attempt_instruction(
     base_instruction_text: str,
     row: dict[str, str],
     attempt_dir: Path,
+    attempt_metadata_file: Path,
     attempt_mode: str,
     prefix_len: int,
     next_task_index: str,
@@ -925,12 +1296,18 @@ def render_attempt_instruction(
         f"- authoritative classifier CSV: {attempt_dir / 'classifier_results.csv'}\n"
         f"- authoritative results CSV: {attempt_dir / 'results.csv'}\n"
         f"- authoritative tasks file: {resolve_path(row['tasks_file'])}\n"
+        f"- authoritative attempt metadata: {attempt_metadata_file}\n"
+        f"- required safe CSV append helper: {SAFE_CSV_APPEND_SCRIPT_PATH}\n"
         "- Ignore older attempt directories and older CSV locations.\n"
         "- Interpret any bare `classifier_results.csv` or `results.csv` references in the base instructions as the authoritative attempt CSVs listed above.\n"
         f"{prefix_note}"
         f"{startup_priority}"
         f"{ownership_note}"
-        "- Write incrementally. Append rows as soon as each token is completed.\n"
+        "- Write incrementally. Persist each completed classifier/result row as soon as the token is done.\n"
+        "- Do not hand-edit CSV text or append raw CSV lines with shell commands.\n"
+        "- Every classifier/result write must go through the safe helper with `--tasks-file` so immutable identity fields are enforced from tasks.jsonl.\n"
+        "- Always pass `--attempt-metadata` with the authoritative attempt metadata so preserved recovery prefixes cannot be rewritten.\n"
+        "- Prefer staging a row JSON file in the attempt directory and calling the helper with `--row-json-file`.\n"
         "- Before the first completed token is written, do not scan `manifest.csv`, prior `verification_findings.csv`, prior final outputs, or unrelated batch directories.\n"
         "- Before 2 completed tokens are written, keep auxiliary lookups narrowly scoped to the current token unless a specific ambiguity requires more.\n"
         "- The harness watches startup no-row and partial-stall conditions. Lack of row growth may cause this attempt to be terminated.\n\n"
@@ -1026,6 +1403,7 @@ def upgrade_row_to_attempt_architecture(row: dict[str, str]) -> dict[str, str]:
             base_instruction_text=base_instruction_text,
             row=updated,
             attempt_dir=active_attempt,
+            attempt_metadata_file=metadata_path,
             attempt_mode=updated.get("current_attempt_mode") or updated.get("prepared_mode") or ("continue_from_prefix" if prefix_len > 0 else "fresh_full_batch"),
             prefix_len=prefix_len,
             next_task_index=next_task_index,
@@ -1066,13 +1444,18 @@ def increment_failure_count(row: dict[str, str], policy: dict[str, Any], failure
             parse_optional_int(updated.get("consecutive_no_progress_attempts"), 0),
         )
     )
-    return updated
+    updated["queue_state"] = "queued"
+    updated["slot_id"] = ""
+    updated["started_at"] = ""
+    updated["round_entry_started_at"] = ""
+    updated["health_state"] = "needs_rerun"
+    return clear_health_warning_fields(updated)
 
 
 def reset_progress_counters(row: dict[str, str]) -> dict[str, str]:
     updated = dict(row)
     updated["consecutive_no_progress_attempts"] = "0"
-    return updated
+    return clear_health_warning_fields(updated)
 
 
 def mark_planned_rotate(row: dict[str, str], reason: str) -> dict[str, str]:
@@ -1084,7 +1467,12 @@ def mark_planned_rotate(row: dict[str, str], reason: str) -> dict[str, str]:
     updated["last_rerun_reason"] = "planned_rotate"
     updated["last_rerun_at"] = iso_now()
     updated["consecutive_no_progress_attempts"] = "0"
-    return updated
+    updated["queue_state"] = "queued"
+    updated["slot_id"] = ""
+    updated["started_at"] = ""
+    updated["round_entry_started_at"] = ""
+    updated["health_state"] = "needs_rerun"
+    return clear_health_warning_fields(updated)
 
 
 def choose_escalation(row: dict[str, str], policy: dict[str, Any]) -> dict[str, Any]:
@@ -1228,6 +1616,7 @@ def create_recovery_attempt(
             base_instruction_text=base_instruction_text,
             row=updated,
             attempt_dir=attempt_dir,
+            attempt_metadata_file=metadata_path,
             attempt_mode=attempt_mode,
             prefix_len=prefix_len,
             next_task_index=next_task_index,
@@ -1264,7 +1653,11 @@ def create_recovery_attempt(
     updated["started_at"] = ""
     updated["first_row_at"] = ""
     updated["last_progress_at"] = ""
-    return updated
+    updated["health_state"] = "prepared"
+    updated["last_worker_activity_at"] = ""
+    updated["last_worker_activity_type"] = ""
+    updated["last_worker_activity_source"] = ""
+    return clear_health_warning_fields(updated)
 
 
 def build_spawn_prompt(row: dict[str, str], model: str, reasoning: str, launch_reason: str, attempt_mode: str) -> str:
@@ -1288,6 +1681,7 @@ def build_spawn_prompt(row: dict[str, str], model: str, reasoning: str, launch_r
         f"{ownership_note}"
         f"Read the worker instructions:\n{resolve_path(row['instructions_file'])}\n\n"
         f"Then execute the batch and write results only to:\n{resolve_path(row['classifier_results_csv'])}\n{resolve_path(row['results_csv'])}\n"
+        "Use the wrapper-provided `tasks.jsonl` and `attempt_metadata.json` when calling the safe CSV helper.\n"
     )
 
 
@@ -1346,6 +1740,8 @@ def prepare_launches(
     for row in schedule_rows:
         updated = upgrade_row_to_attempt_architecture(row)
         updated, inspection = reconcile_active_attempt(updated, policy)
+        best_valid_inspection = inspect_best_valid_snapshot(updated)
+        recovery_inspection = select_best_progress_inspection(inspection, best_valid_inspection)
         updated["status"] = normalize_status(updated.get("status", ""), updated.get("started_at", ""))
         if parse_optional_int(updated.get("round_index"), 0) != round_index:
             updated_rows.append(updated)
@@ -1354,11 +1750,11 @@ def prepare_launches(
             updated_rows.append(updated)
             continue
 
-        if updated.get("status") == "deferred_long_tail":
+        if updated.get("status") in {"deferred_long_tail", "retry_capped"}:
             updated_rows.append(updated)
             continue
 
-        if inspection["state"] == "completed" and not (updated.get("status") == "needs_rerun" and is_qc_forced_rerun(updated)):
+        if recovery_inspection["state"] == "completed" and not (updated.get("status") == "needs_rerun" and is_qc_forced_rerun(updated)):
             updated["status"] = "completed"
             updated["completion_mode"] = updated.get("completion_mode") or "normal"
             updated["prepared_mode"] = ""
@@ -1377,11 +1773,11 @@ def prepare_launches(
         if updated["status"] == "needs_rerun":
             rule = choose_escalation(updated, policy)
             requested_mode = updated.get("prepared_mode") or str(rule.get("preferred_attempt_mode", "fresh_restart"))
-            if requested_mode == "fresh_restart" and inspection["state"] == "partial_misaligned" and inspection["prefix_valid"] and inspection["prefix_len"] > 0:
+            if requested_mode == "fresh_restart" and recovery_inspection["prefix_valid"] and recovery_inspection["prefix_len"] > 0:
                 requested_mode = "continue_from_prefix"
-            attempt_mode = derive_attempt_mode(requested_mode, inspection)
+            attempt_mode = derive_attempt_mode(requested_mode, recovery_inspection)
             launch_reason = updated.get("prepared_reason") or updated.get("last_failure_type") or updated.get("last_rerun_reason") or "needs_rerun"
-            updated = create_recovery_attempt(updated, inspection, attempt_mode, launch_reason, policy)
+            updated = create_recovery_attempt(updated, recovery_inspection, attempt_mode, launch_reason, policy)
             if attempt_mode == "fresh_restart":
                 inspection = inspect_row(updated)
             else:
@@ -1391,14 +1787,14 @@ def prepare_launches(
                 updated = increment_failure_count(updated, policy, "schema_error")
                 rule = choose_escalation(updated, policy)
                 preferred_mode = str(rule.get("preferred_attempt_mode", "fresh_restart"))
-                if preferred_mode == "fresh_restart" and inspection["prefix_valid"] and inspection["prefix_len"] > 0:
+                if preferred_mode == "fresh_restart" and recovery_inspection["prefix_valid"] and recovery_inspection["prefix_len"] > 0:
                     preferred_mode = "continue_from_prefix"
-                attempt_mode = derive_attempt_mode(preferred_mode, inspection)
-                updated = create_recovery_attempt(updated, inspection, attempt_mode, updated["last_failure_type"], policy)
+                attempt_mode = derive_attempt_mode(preferred_mode, recovery_inspection)
+                updated = create_recovery_attempt(updated, recovery_inspection, attempt_mode, updated["last_failure_type"], policy)
                 updated, inspection = reconcile_active_attempt(updated, policy)
             else:
                 updated["status"] = "prepared"
-                if inspection["prefix_valid"] and inspection["prefix_len"] > 0:
+                if recovery_inspection["prefix_valid"] and recovery_inspection["prefix_len"] > 0:
                     updated["prepared_mode"] = "continue_from_prefix"
                     updated["prepared_reason"] = updated.get("prepared_reason") or "resume_partial_batch"
                 else:
@@ -1434,9 +1830,16 @@ def mark_round_started(
             updated["planned_rotate"] = ""
             updated["started_at"] = started_at
             updated["round_entry_started_at"] = updated.get("round_entry_started_at") or started_at
+            updated["health_state"] = "healthy_active"
+            updated["last_worker_activity_at"] = ""
+            updated["last_worker_activity_type"] = ""
+            updated["last_worker_activity_source"] = ""
+            updated = clear_health_warning_fields(updated)
             if parse_optional_int(updated.get("last_seen_classifier_rows"), 0) > 0 or parse_optional_int(updated.get("last_seen_result_rows"), 0) > 0:
                 updated["first_row_at"] = updated.get("first_row_at") or started_at
-                updated["last_progress_at"] = updated.get("last_progress_at") or started_at
+                updated["last_progress_at"] = started_at
+            else:
+                updated["last_progress_at"] = ""
         updated_rows.append(updated)
     return updated_rows
 
@@ -1453,8 +1856,11 @@ def watch_round(
     actions: list[dict[str, str]] = []
     current_time = now_utc()
     current_iso = current_time.isoformat()
-    startup_timeout = startup_timeout_seconds or parse_optional_int(policy.get("timeouts", {}).get("startup_no_row_seconds"), 300)
-    stall_timeout = partial_stall_timeout_seconds or parse_optional_int(policy.get("timeouts", {}).get("partial_stall_seconds"), 240)
+    timeout_profile = parse_timeout_profile(
+        policy,
+        startup_timeout_seconds=startup_timeout_seconds,
+        partial_stall_timeout_seconds=partial_stall_timeout_seconds,
+    )
     segment_values = segment_policy_values(policy)
 
     for row in schedule_rows:
@@ -1468,7 +1874,7 @@ def watch_round(
             updated_rows.append(updated)
             continue
 
-        if updated.get("status") == "deferred_long_tail":
+        if updated.get("status") in {"deferred_long_tail", "retry_capped"}:
             updated_rows.append(updated)
             continue
 
@@ -1483,6 +1889,19 @@ def watch_round(
         uses_segment_contract = attempt_uses_segment_contract(current_attempt_mode)
         updated["last_seen_classifier_rows"] = str(classifier_rows)
         updated["last_seen_result_rows"] = str(result_rows)
+        updated, _ = sync_best_valid_snapshot(
+            updated,
+            inspection,
+            source=relative_path(active_attempt_dir_for_row(updated)),
+            attempt_index=parse_optional_int(updated.get("attempt_index"), 0),
+        )
+        worker_activity = inspect_worker_log_activity(worker_log_path_for_row(updated))
+        updated = update_worker_activity_fields(updated, worker_activity)
+        worker_activity_recent = activity_is_recent(
+            worker_activity,
+            current_time,
+            grace_seconds=timeout_profile["activity_grace_seconds"],
+        )
 
         if inspection["state"] == "completed":
             updated["status"] = "completed"
@@ -1492,6 +1911,7 @@ def watch_round(
             updated["planned_rotate"] = ""
             updated["first_row_at"] = updated.get("first_row_at") or current_iso
             updated["last_progress_at"] = current_iso
+            updated["health_state"] = "completed"
             updated = reset_progress_counters(updated)
             updated_rows.append(updated)
             continue
@@ -1500,6 +1920,7 @@ def watch_round(
             updated["first_row_at"] = updated.get("first_row_at") or current_iso
         if progress_increased:
             updated["last_progress_at"] = current_iso
+            updated["health_state"] = "healthy_active"
             updated = reset_progress_counters(updated)
 
         if updated.get("status") != "running" or not updated.get("started_at"):
@@ -1513,8 +1934,12 @@ def watch_round(
 
         planned_rotate_reason = ""
         failure_type = ""
-        if inspection["state"] == "header_only" and elapsed_since_start >= startup_timeout:
+        soft_warning_reason = ""
+        next_retry_at = ""
+        if inspection["state"] == "header_only" and elapsed_since_start >= timeout_profile["startup_hard_seconds"] and not worker_activity_recent:
             failure_type = "startup_no_row"
+        elif inspection["state"] == "header_only" and elapsed_since_start >= timeout_profile["startup_soft_seconds"]:
+            soft_warning_reason = "startup_no_row_soft_timeout"
         elif (
             uses_segment_contract
             and inspection["state"] == "partial_prefix"
@@ -1530,10 +1955,19 @@ def watch_round(
             and elapsed_since_progress >= segment_values["planned_rotate_idle_seconds"]
         ):
             planned_rotate_reason = "segment_target_reached"
-        elif inspection["state"] == "partial_prefix" and elapsed_since_progress >= stall_timeout:
+        elif inspection["state"] == "partial_prefix" and elapsed_since_progress >= timeout_profile["stall_hard_seconds"] and not worker_activity_recent:
             failure_type = "partial_stall"
-        elif inspection["state"] == "partial_misaligned" and elapsed_since_progress >= stall_timeout:
+        elif inspection["state"] == "partial_misaligned" and elapsed_since_progress >= timeout_profile["stall_hard_seconds"] and not worker_activity_recent:
             failure_type = "row_count_mismatch"
+        elif inspection["state"] == "partial_prefix" and elapsed_since_progress >= timeout_profile["stall_soft_seconds"]:
+            soft_warning_reason = "partial_stall_soft_timeout"
+        elif inspection["state"] == "partial_misaligned" and elapsed_since_progress >= timeout_profile["stall_soft_seconds"]:
+            soft_warning_reason = "row_count_mismatch_soft_timeout"
+
+        if soft_warning_reason == "startup_no_row_soft_timeout":
+            next_retry_at = (started_at + timedelta(seconds=timeout_profile["startup_hard_seconds"])).isoformat()
+        elif soft_warning_reason:
+            next_retry_at = (last_progress_at + timedelta(seconds=timeout_profile["stall_hard_seconds"])).isoformat()
 
         if failure_type:
             updated = increment_failure_count(updated, policy, failure_type)
@@ -1586,6 +2020,14 @@ def watch_round(
         else:
             updated["status"] = "running"
             updated["planned_rotate"] = ""
+            if soft_warning_reason:
+                updated["soft_timeout_warned_at"] = updated.get("soft_timeout_warned_at") or current_iso
+                updated["last_timeout_warning_reason"] = soft_warning_reason
+                updated["next_eligible_retry_at"] = next_retry_at
+                updated["health_state"] = "slow_active" if worker_activity_recent else "silent_suspect"
+            else:
+                updated["health_state"] = "healthy_active" if worker_activity_recent or progress_increased else "healthy_active"
+                updated = clear_health_warning_fields(updated)
 
         updated_rows.append(updated)
 

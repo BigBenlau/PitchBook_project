@@ -35,6 +35,7 @@ RUNNING_PHASES = {
     "collect",
     "split_recovery",
     "deferred_long_tail",
+    "retry_capped",
     "tail_retry_pending",
 }
 DEFAULT_MAX_TAIL_RETRIES = 1
@@ -52,6 +53,9 @@ def load_round_supervisor_module() -> Any:
 
 
 ROUND = load_round_supervisor_module()
+GLOBAL_RETRY_PENDING_BATCHES_CSV = ROUND.DEFAULT_FINAL_DIR / "retry_pending_batches.csv"
+GLOBAL_SCHEMA_ERROR_BATCHES_CSV = ROUND.DEFAULT_FINAL_DIR / "schema_error_batches.csv"
+GLOBAL_COLLECT_BLOCKED_BATCHES_CSV = ROUND.DEFAULT_FINAL_DIR / "collect_blocked_batches.csv"
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +76,11 @@ def parse_args() -> argparse.Namespace:
         "--batch-timeout-seconds",
         type=int,
         default=ROUND.DEFAULT_BATCH_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--max-batch-restarts",
+        type=int,
+        default=ROUND.DEFAULT_MAX_BATCH_RESTARTS,
     )
     parser.add_argument(
         "--startup-no-row-timeout-seconds",
@@ -108,9 +117,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def effective_status(row: dict[str, str]) -> str:
-    if ROUND.row_is_deferred_long_tail(row):
-        return "deferred_long_tail"
-    return str(row.get("status") or "").strip() or "prepared"
+    return ROUND.effective_row_status(row) or "prepared"
 
 
 def parse_batch_number(batch_file: str) -> int:
@@ -175,7 +182,7 @@ def load_schedule_with_queue_columns(
         status = effective_status(updated)
         collect_state = str(updated.get("collect_state") or "").strip()
         if collect_state not in COLLECT_STATE_VALUES:
-            if status == "deferred_long_tail":
+            if status in {"deferred_long_tail", ROUND.RETRY_CAPPED_STATUS}:
                 collect_state = "skipped"
             elif status == "completed" and ROUND.parse_int(updated.get("round_index"), 0) <= collected_round_cutoff:
                 collect_state = "done"
@@ -245,20 +252,6 @@ def normalize_queue_rows(
         last_collected_attempt_index = ROUND.parse_int(updated.get("last_collected_attempt_index"), 0)
         has_live_registry = row_has_live_registry_entry(updated, registry)
         has_active_split = row_has_active_split(updated)
-        attempt_start_prefix_rows = ROUND.parse_int(updated.get("attempt_start_prefix_rows"), 0)
-        current_progress_rows = min(
-            ROUND.parse_int(updated.get("last_seen_classifier_rows"), 0),
-            ROUND.parse_int(updated.get("last_seen_result_rows"), 0),
-        )
-        has_attempt_progress = current_progress_rows > attempt_start_prefix_rows
-        rerun_reason = str(
-            updated.get("prepared_reason") or updated.get("last_rerun_reason") or ""
-        ).strip()
-        split_launch_requested = rerun_reason == ROUND.SPLIT_BATCH_LAUNCH_REASON
-        queue_state = str(updated.get("queue_state") or "").strip()
-        progress_implies_live_attempt = has_attempt_progress and (
-            parse_slot_id(updated.get("slot_id")) > 0 or queue_state in {"running", "launching"}
-        )
 
         if last_collected_attempt_index > 0 and current_attempt_index > last_collected_attempt_index and collect_state == "done":
             updated["collect_state"] = "pending"
@@ -266,11 +259,7 @@ def normalize_queue_rows(
             collect_state = "pending"
             changed = True
 
-        if status in {"prepared", "needs_rerun"} and (
-            has_live_registry
-            or has_active_split
-            or (progress_implies_live_attempt and not split_launch_requested)
-        ):
+        if status in {"prepared", "needs_rerun"} and (has_live_registry or has_active_split):
             updated["status"] = "running"
             status = "running"
             changed = True
@@ -300,6 +289,38 @@ def normalize_queue_rows(
                 if not str(updated.get("last_progress_at") or "").strip():
                     updated["last_progress_at"] = str(updated.get("started_at") or "").strip() or ROUND.iso_now()
                     changed = True
+
+        if status == ROUND.RETRY_CAPPED_STATUS:
+            if updated.get("tail_retry_pending"):
+                updated["tail_retry_pending"] = ""
+                changed = True
+            if updated.get("queue_state") != ROUND.RETRY_CAPPED_STATUS:
+                updated["queue_state"] = ROUND.RETRY_CAPPED_STATUS
+                changed = True
+            if collect_state != "skipped":
+                updated["collect_state"] = "skipped"
+                changed = True
+            if updated.get("slot_id"):
+                updated["slot_id"] = ""
+                changed = True
+            updated_rows.append(updated)
+            continue
+
+        if status in ROUND.NONBLOCKING_FAILURE_STATUSES:
+            if updated.get("tail_retry_pending"):
+                updated["tail_retry_pending"] = ""
+                changed = True
+            if updated.get("queue_state") != status:
+                updated["queue_state"] = status
+                changed = True
+            if collect_state != "skipped":
+                updated["collect_state"] = "skipped"
+                changed = True
+            if updated.get("slot_id"):
+                updated["slot_id"] = ""
+                changed = True
+            updated_rows.append(updated)
+            continue
 
         if status == "deferred_long_tail":
             if updated.get("tail_retry_pending"):
@@ -420,7 +441,7 @@ def target_scope_rows(schedule_rows: list[dict[str, str]], target_rounds: list[i
 
 def row_has_open_queue_work(row: dict[str, str]) -> bool:
     status = effective_status(row)
-    if status == "deferred_long_tail":
+    if status in {"deferred_long_tail", ROUND.RETRY_CAPPED_STATUS, *ROUND.NONBLOCKING_FAILURE_STATUSES}:
         return False
     if status == "completed" and str(row.get("collect_state") or "").strip() == "done":
         return False
@@ -545,6 +566,16 @@ def deferred_rows(schedule_rows: list[dict[str, str]], target_rounds: list[int])
     return rows
 
 
+def retry_capped_rows(schedule_rows: list[dict[str, str]], target_rounds: list[int]) -> list[dict[str, str]]:
+    rows = [
+        row
+        for row in target_scope_rows(schedule_rows, target_rounds)
+        if effective_status(row) == ROUND.RETRY_CAPPED_STATUS
+    ]
+    rows.sort(key=row_sort_key)
+    return rows
+
+
 def active_running_rows(
     schedule_rows: list[dict[str, str]],
     target_rounds: list[int],
@@ -620,6 +651,7 @@ def write_state(
     tail_retry_queue = tail_retry_rows(schedule_rows, target_rounds)
     collect_queue = ready_to_collect_rows(schedule_rows, target_rounds)
     deferred_queue = deferred_rows(schedule_rows, target_rounds)
+    retry_capped_queue = retry_capped_rows(schedule_rows, target_rounds)
     current_round_index = earliest_open_round(schedule_rows, target_rounds)
     payload = {
         "updated_at": ROUND.iso_now(),
@@ -675,10 +707,23 @@ def write_state(
             }
             for row in deferred_queue
         ],
+        "retry_capped_queue": [
+            {
+                "batch_file": row.get("batch_file") or "",
+                "round_index": ROUND.parse_int(row.get("round_index"), 0),
+                "retry_cap_rerun_count": ROUND.parse_int(
+                    row.get("retry_cap_rerun_count") or row.get("retry_cap_restart_count"),
+                    0,
+                ),
+                "retry_cap_limit": ROUND.parse_int(row.get("retry_cap_limit"), 0),
+                "deferred_reason": row.get("deferred_reason") or "",
+            }
+            for row in retry_capped_queue
+        ],
         "completed_batch_count": sum(
             1
             for row in target_scope_rows(schedule_rows, target_rounds)
-            if effective_status(row) == "deferred_long_tail"
+            if effective_status(row) in {"deferred_long_tail", ROUND.RETRY_CAPPED_STATUS}
             or (effective_status(row) == "completed" and str(row.get("collect_state") or "").strip() == "done")
         ),
         "collect_backlog_count": len(collect_queue),
@@ -748,6 +793,44 @@ def run_prepare_for_batches(
     if completed.returncode != 0:
         raise SystemExit(f"prepare-launches failed for round {round_index} batch scope")
     return ROUND.parse_launch_queue(runs_dir, round_index)
+
+
+def run_watch_for_batches(
+    round_index: int,
+    batch_files: list[str],
+    *,
+    runs_dir: Path,
+    startup_timeout_seconds: int,
+    partial_stall_timeout_seconds: int,
+    events_log: Path,
+) -> list[dict[str, str]]:
+    cmd = [
+        sys.executable,
+        str(SCRIPT_DIR / "4_manage_round_runtime.py"),
+        "--runs-dir",
+        str(runs_dir),
+        "--round-index",
+        str(round_index),
+        "--watch-round",
+        "--startup-no-row-timeout-seconds",
+        str(startup_timeout_seconds),
+        "--partial-stall-timeout-seconds",
+        str(partial_stall_timeout_seconds),
+    ]
+    for batch_file in batch_files:
+        cmd.extend(["--batch-file", batch_file])
+    completed = ROUND.run_command(
+        cmd,
+        cwd=ROUND.REPO_ROOT,
+        events_log=events_log,
+        label=f"watch_round_{round_index}_selected",
+    )
+    if completed.returncode == 0:
+        return []
+    actions = ROUND.parse_runtime_actions(runs_dir, round_index)
+    if actions:
+        return actions
+    raise SystemExit(f"watch-round failed for round {round_index} batch scope without runtime actions")
 
 
 def run_lint_for_batches(
@@ -903,11 +986,20 @@ def reserve_launch_slots(
             launch_row.get("segment_hard_cap_rows") or row.get("segment_hard_cap_rows") or ""
         )
         row["planned_rotate"] = ""
-        row["started_at"] = row.get("started_at") or started_at
+        row["started_at"] = started_at
         row["round_entry_started_at"] = row.get("round_entry_started_at") or started_at
+        row["health_state"] = "healthy_active"
+        row["last_worker_activity_at"] = ""
+        row["last_worker_activity_type"] = ""
+        row["last_worker_activity_source"] = ""
+        row["soft_timeout_warned_at"] = ""
+        row["last_timeout_warning_reason"] = ""
+        row["next_eligible_retry_at"] = ""
         if ROUND.parse_int(row.get("last_seen_classifier_rows"), 0) > 0 or ROUND.parse_int(row.get("last_seen_result_rows"), 0) > 0:
             row["first_row_at"] = row.get("first_row_at") or started_at
-            row["last_progress_at"] = row.get("last_progress_at") or started_at
+            row["last_progress_at"] = started_at
+        else:
+            row["last_progress_at"] = ""
         return row
 
     return apply_batch_row_updates(schedule_rows, batch_files=list(by_batch), update_fn=_update)
@@ -951,20 +1043,72 @@ def mark_batches_collect_failed(
     now_iso = ROUND.iso_now()
 
     def _update(row: dict[str, str]) -> dict[str, str]:
-        row["status"] = "needs_rerun"
-        row["queue_state"] = "queued"
-        row["collect_state"] = "pending"
+        if effective_status(row) in {"deferred_long_tail", ROUND.RETRY_CAPPED_STATUS, *ROUND.NONBLOCKING_FAILURE_STATUSES}:
+            return row
+        status = (
+            ROUND.SCHEMA_ERROR_QUARANTINED_STATUS
+            if reason == "lint_failed"
+            else ROUND.COLLECT_BLOCKED_STATUS
+        )
+        row["status"] = status
+        row["completion_mode"] = status
+        row["queue_state"] = status
+        row["collect_state"] = "skipped"
         row["collect_failure_reason"] = reason
-        row["prepared_mode"] = "fresh_restart"
-        row["prepared_reason"] = reason
+        row["prepared_mode"] = ""
+        row["prepared_reason"] = ""
         row["last_failure_type"] = "schema_error" if reason == "lint_failed" else reason
         row["last_rerun_reason"] = reason
         row["last_rerun_at"] = now_iso
         row["tail_retry_pending"] = ""
         row["slot_id"] = ""
+        row["health_state"] = status
+        row["soft_timeout_warned_at"] = ""
+        row["last_timeout_warning_reason"] = ""
+        row["next_eligible_retry_at"] = ""
         return row
 
     return apply_batch_row_updates(schedule_rows, batch_files=batch_files, update_fn=_update)
+
+
+def write_backlog_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        if path.exists():
+            path.unlink()
+        return
+    columns = [
+        "batch_file",
+        "run_dir",
+        "status",
+        "first_task_index",
+        "last_task_index",
+        "collect_failure_reason",
+        "last_failure_type",
+        "last_rerun_reason",
+        "last_rerun_at",
+    ]
+    write_schedule_csv(path, [{column: row.get(column, "") for column in columns} for row in rows], fieldnames=columns)
+
+
+def write_global_backlog_exports(schedule_rows: list[dict[str, str]]) -> None:
+    retry_pending_rows = [
+        row
+        for row in schedule_rows
+        if effective_status(row) in {
+            ROUND.PARTIAL_COMPLETE_RETRY_PENDING_STATUS,
+            ROUND.WORKER_FAILED_RETRY_PENDING_STATUS,
+        }
+    ]
+    schema_error_rows = [
+        row for row in schedule_rows if effective_status(row) == ROUND.SCHEMA_ERROR_QUARANTINED_STATUS
+    ]
+    collect_blocked_rows = [
+        row for row in schedule_rows if effective_status(row) == ROUND.COLLECT_BLOCKED_STATUS
+    ]
+    write_backlog_rows(GLOBAL_RETRY_PENDING_BATCHES_CSV, retry_pending_rows)
+    write_backlog_rows(GLOBAL_SCHEMA_ERROR_BATCHES_CSV, schema_error_rows)
+    write_backlog_rows(GLOBAL_COLLECT_BLOCKED_BATCHES_CSV, collect_blocked_rows)
 
 
 def mark_batches_verifier_rerun(
@@ -976,6 +1120,8 @@ def mark_batches_verifier_rerun(
     now_iso = ROUND.iso_now()
 
     def _update(row: dict[str, str]) -> dict[str, str]:
+        if effective_status(row) in {"deferred_long_tail", ROUND.RETRY_CAPPED_STATUS}:
+            return row
         row["status"] = "needs_rerun"
         row["queue_state"] = "queued"
         row["collect_state"] = "pending"
@@ -987,6 +1133,10 @@ def mark_batches_verifier_rerun(
         row["last_rerun_at"] = now_iso
         row["tail_retry_pending"] = ""
         row["slot_id"] = ""
+        row["health_state"] = "needs_rerun"
+        row["soft_timeout_warned_at"] = ""
+        row["last_timeout_warning_reason"] = ""
+        row["next_eligible_retry_at"] = ""
         return row
 
     return apply_batch_row_updates(schedule_rows, batch_files=batch_files, update_fn=_update)
@@ -1190,6 +1340,8 @@ def main() -> None:
         raise SystemExit("--max-workers must be greater than 0.")
     if args.poll_seconds <= 0:
         raise SystemExit("--poll-seconds must be greater than 0.")
+    if args.max_batch_restarts <= 0:
+        raise SystemExit("--max-batch-restarts must be greater than 0.")
     if args.split_batch_respawn_threshold <= 0:
         raise SystemExit("--split-batch-respawn-threshold must be greater than 0.")
     if args.split_batch_failure_threshold <= 0:
@@ -1239,6 +1391,7 @@ def main() -> None:
             f"startup_timeout={args.startup_no_row_timeout_seconds}s "
             f"stall_timeout={args.partial_stall_timeout_seconds}s "
             f"batch_timeout={args.batch_timeout_seconds}s "
+            f"max_batch_restarts={args.max_batch_restarts} "
             f"split_thresholds=respawn>={args.split_batch_respawn_threshold},failures>={args.split_batch_failure_threshold}"
         ),
     )
@@ -1313,6 +1466,78 @@ def main() -> None:
                 max_workers=args.max_workers,
             )
             phase = "split_recovery"
+
+        watch_actions: list[dict[str, str]] = []
+        for round_index in target_rounds:
+            watch_batch_files = [
+                str(row.get("batch_file") or "")
+                for row in ROUND.round_rows(schedule_rows, round_index)
+                if effective_status(row) == "running"
+                and not row_has_active_split(row)
+                and str(row.get("batch_file") or "").strip()
+            ]
+            if not watch_batch_files:
+                continue
+            actions = run_watch_for_batches(
+                round_index,
+                sorted(set(watch_batch_files)),
+                runs_dir=runs_dir,
+                startup_timeout_seconds=args.startup_no_row_timeout_seconds,
+                partial_stall_timeout_seconds=args.partial_stall_timeout_seconds,
+                events_log=events_log,
+            )
+            if actions:
+                watch_actions.extend(actions)
+        if watch_actions:
+            registry = ROUND.terminate_for_actions(watch_actions, registry, events_log)
+            ROUND.save_registry(registry_json, registry)
+            schedule_rows = refresh_schedule(
+                schedule_csv,
+                fieldnames=fieldnames,
+                state_hint=ROUND.load_json_dict(state_json),
+                registry=registry,
+                max_workers=args.max_workers,
+            )
+            phase = "watch"
+
+        retry_capped_any = False
+        for round_index in target_rounds:
+            capped_rows = ROUND.analyze_retry_capped_rows(
+                schedule_rows,
+                round_index,
+                max_batch_restarts=args.max_batch_restarts,
+            )
+            if not capped_rows:
+                continue
+            retry_capped_any = True
+            registry = ROUND.terminate_for_batch_files(
+                {
+                    str(row.get("batch_file") or "")
+                    for row in capped_rows
+                    if str(row.get("batch_file") or "").strip()
+                },
+                registry,
+                events_log,
+                reason=f"queue_round_{round_index}_retry_limit",
+            )
+            schedule_rows = ROUND.mark_retry_capped_rows(
+                schedule_csv,
+                schedule_rows,
+                capped_rows,
+                schedule_fieldnames=fieldnames,
+                runs_dir=runs_dir,
+                events_log=events_log,
+            )
+        if retry_capped_any:
+            ROUND.save_registry(registry_json, registry)
+            schedule_rows = refresh_schedule(
+                schedule_csv,
+                fieldnames=fieldnames,
+                state_hint=ROUND.load_json_dict(state_json),
+                registry=registry,
+                max_workers=args.max_workers,
+            )
+            phase = ROUND.RETRY_CAPPED_STATUS
 
         # Reconcile completed outputs before long-tail analysis so finished batches are not
         # incorrectly deferred just because their status has not been refreshed yet.
@@ -1585,6 +1810,7 @@ def main() -> None:
                     reason="lint_failed",
                 )
                 save_schedule(schedule_csv, fieldnames, schedule_rows)
+                write_global_backlog_exports(schedule_rows)
                 ROUND.log_event(events_log, f"[queue:collect_lint_failed] batch={batch_file}")
                 continue
 
@@ -1604,11 +1830,18 @@ def main() -> None:
                 max_workers=args.max_workers,
             )
             if not collect_ok:
-                raise SystemExit(
-                    f"Batch collect failed for {batch_file}. Global final outputs were not safely synchronized."
+                schedule_rows = mark_batches_collect_failed(
+                    schedule_rows,
+                    batch_files=[batch_file],
+                    reason="collect_failed",
                 )
+                save_schedule(schedule_csv, fieldnames, schedule_rows)
+                write_global_backlog_exports(schedule_rows)
+                ROUND.log_event(events_log, f"[queue:collect_failed] batch={batch_file}")
+                continue
             schedule_rows = mark_batches_collected(schedule_rows, [batch_file])
             save_schedule(schedule_csv, fieldnames, schedule_rows)
+            write_global_backlog_exports(schedule_rows)
             ROUND.log_event(events_log, f"[queue:collect_complete] batch={batch_file}")
             continue
 

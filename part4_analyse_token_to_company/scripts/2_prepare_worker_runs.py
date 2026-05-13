@@ -15,6 +15,7 @@ REPO_ROOT = PART4_DIR.parent
 RUNTIME_DIR = PART4_DIR / "runtime"
 WORKER_BASE_TEMPLATE_PATH = RUNTIME_DIR / "worker_base_template.md"
 DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
+SAFE_CSV_APPEND_SCRIPT_PATH = SCRIPT_DIR / "part4_safe_csv_append.py"
 
 DEFAULT_BATCH_DIR = PART4_DIR / "agent_task_batches" / "token_company"
 DEFAULT_RUNS_DIR = PART4_DIR / "agent_runs" / "token_company_parallel"
@@ -124,8 +125,25 @@ SCHEDULE_COLUMNS = [
     "last_rerun_reason",
     "last_rerun_at",
     "started_at",
+    "round_entry_started_at",
     "first_row_at",
     "last_progress_at",
+    "health_state",
+    "last_worker_activity_at",
+    "last_worker_activity_type",
+    "last_worker_activity_source",
+    "soft_timeout_warned_at",
+    "last_timeout_warning_reason",
+    "next_eligible_retry_at",
+    "reconciled_dir",
+    "best_valid_classifier_results_csv",
+    "best_valid_results_csv",
+    "best_valid_progress_manifest_json",
+    "best_valid_classifier_rows",
+    "best_valid_result_rows",
+    "best_valid_attempt_index",
+    "best_valid_updated_at",
+    "best_valid_source",
     "last_seen_classifier_rows",
     "last_seen_result_rows",
     "startup_failure_count",
@@ -195,6 +213,10 @@ def relative_path(path: Path) -> str:
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def iso_now() -> str:
+    return now_utc().isoformat()
 
 
 def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict:
@@ -299,6 +321,7 @@ def build_initial_attempt_instructions(
     base_instruction_text: str,
     attempt_dir: Path,
     tasks_path: Path,
+    attempt_metadata_file: Path,
     active_lease_file: Path,
     lease_id: str,
     segment_target_rows: int,
@@ -312,6 +335,8 @@ def build_initial_attempt_instructions(
         f"- authoritative classifier CSV: {attempt_dir / 'classifier_results.csv'}\n"
         f"- authoritative results CSV: {attempt_dir / 'results.csv'}\n"
         f"- authoritative tasks file: {tasks_path}\n"
+        f"- authoritative attempt metadata: {attempt_metadata_file}\n"
+        f"- required safe CSV append helper: {SAFE_CSV_APPEND_SCRIPT_PATH}\n"
         f"- active lease file: {active_lease_file}\n"
         f"- required lease_id: {lease_id}\n"
         "- Ignore older attempt directories and older CSV locations.\n"
@@ -319,7 +344,11 @@ def build_initial_attempt_instructions(
         "- Own the entire batch in this single fresh worker and continue until the batch is complete or an explicit blocker is reached.\n"
         "- Do not proactively hand off or segment the batch in this normal mode.\n"
         "- Recovery-only segment settings exist for later reruns, but they do not apply to this initial full-batch attempt.\n"
-        "- Write incrementally. Append rows as soon as each token is completed.\n"
+        "- Write incrementally. Persist each completed classifier/result row as soon as the token is done.\n"
+        "- Do not hand-edit CSV text or append raw CSV lines with shell commands.\n"
+        "- Every classifier/result write must go through the safe helper with `--tasks-file` so immutable identity fields are enforced from tasks.jsonl.\n"
+        "- Always pass `--attempt-metadata` with the authoritative attempt metadata so preserved recovery prefixes cannot be rewritten later.\n"
+        "- Prefer staging a row JSON file in the attempt directory and calling the helper with `--row-json-file`.\n"
         "- The harness watches startup no-row and partial-stall conditions. Lack of row growth may cause this attempt to be terminated.\n\n"
         "--- BEGIN BASE INSTRUCTIONS ---\n\n"
         f"{base_instruction_text.rstrip()}\n\n"
@@ -518,6 +547,11 @@ Read the worker instructions:
 Then execute the batch and write results only to:
 {row["classifier_results_csv"]}
 {row["results_csv"]}
+
+All row writes must go through:
+{SAFE_CSV_APPEND_SCRIPT_PATH}
+
+Follow the wrapper-provided `tasks.jsonl` and `attempt_metadata.json` paths when calling the helper.
 """
 
 
@@ -641,6 +675,30 @@ def write_schedule_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def write_best_valid_manifest(
+    path: Path,
+    *,
+    batch_file: Path,
+    classifier_rows: int,
+    result_rows: int,
+    attempt_index: int,
+    updated_at: str,
+    source: str,
+) -> None:
+    write_json(
+        path,
+        {
+            "batch_file": relative_path(batch_file),
+            "best_valid_classifier_rows": classifier_rows,
+            "best_valid_result_rows": result_rows,
+            "best_valid_attempt_index": attempt_index,
+            "best_valid_updated_at": updated_at,
+            "best_valid_source": source,
+            "updated_at": now_utc().isoformat(),
+        },
+    )
+
+
 def prepare_round_verification(
     runs_dir: Path,
     round_index: int,
@@ -729,6 +787,14 @@ def prepare_run(
     results_csv = active_attempt / "results.csv"
     write_results_header(results_csv, force=force)
 
+    reconciled_dir = run_dir / "reconciled"
+    reconciled_dir.mkdir(parents=True, exist_ok=True)
+    best_valid_classifier_results_csv = reconciled_dir / "best_valid_classifier_results.csv"
+    best_valid_results_csv = reconciled_dir / "best_valid_results.csv"
+    best_valid_progress_manifest_json = reconciled_dir / "progress_manifest.json"
+    write_classifier_header(best_valid_classifier_results_csv, force=force)
+    write_results_header(best_valid_results_csv, force=force)
+
     instructions_file = active_attempt / "worker_instructions.md"
     metadata_file = attempt_metadata_path(active_attempt)
     write_json(
@@ -761,6 +827,7 @@ def prepare_run(
                 base_instruction_text=base_instruction_text,
                 attempt_dir=active_attempt,
                 tasks_path=tasks_path,
+                attempt_metadata_file=metadata_file,
                 active_lease_file=active_lease_file,
                 lease_id=lease_id,
                 segment_target_rows=segment_policy["target_rows_per_attempt"],
@@ -773,16 +840,40 @@ def prepare_run(
     last = tasks[-1]
     result_rows = count_result_rows(results_csv)
     classifier_rows = count_result_rows(classifier_results_csv)
+    best_valid_classifier_rows = 0
+    best_valid_result_rows = 0
+    best_valid_attempt_index = 0
+    best_valid_updated_at = ""
+    best_valid_source = ""
+    if classifier_rows == result_rows and classifier_rows > 0:
+        shutil.copyfile(classifier_results_csv, best_valid_classifier_results_csv)
+        shutil.copyfile(results_csv, best_valid_results_csv)
+        best_valid_classifier_rows = classifier_rows
+        best_valid_result_rows = result_rows
+        best_valid_attempt_index = 1
+        best_valid_updated_at = now_utc().isoformat()
+        best_valid_source = relative_path(active_attempt)
+    write_best_valid_manifest(
+        best_valid_progress_manifest_json,
+        batch_file=batch_file,
+        classifier_rows=best_valid_classifier_rows,
+        result_rows=best_valid_result_rows,
+        attempt_index=best_valid_attempt_index,
+        updated_at=best_valid_updated_at,
+        source=best_valid_source,
+    )
     if result_rows >= len(tasks) and classifier_rows >= len(tasks):
         status = "completed"
         prepared_mode = ""
         prepared_reason = ""
         queue_state = "ready_to_collect"
+        health_state = "completed"
     else:
         status = "prepared"
         prepared_mode = "continue_from_prefix" if max(result_rows, classifier_rows) > 0 else "fresh_full_batch"
         prepared_reason = "initial_prepare"
         queue_state = "queued"
+        health_state = "prepared"
 
     failure_counts_json = json.dumps(
         {
@@ -842,8 +933,25 @@ def prepare_run(
         "last_rerun_reason": "",
         "last_rerun_at": "",
         "started_at": "",
+        "round_entry_started_at": "",
         "first_row_at": "",
         "last_progress_at": "",
+        "health_state": health_state,
+        "last_worker_activity_at": "",
+        "last_worker_activity_type": "",
+        "last_worker_activity_source": "",
+        "soft_timeout_warned_at": "",
+        "last_timeout_warning_reason": "",
+        "next_eligible_retry_at": "",
+        "reconciled_dir": relative_path(reconciled_dir),
+        "best_valid_classifier_results_csv": relative_path(best_valid_classifier_results_csv),
+        "best_valid_results_csv": relative_path(best_valid_results_csv),
+        "best_valid_progress_manifest_json": relative_path(best_valid_progress_manifest_json),
+        "best_valid_classifier_rows": str(best_valid_classifier_rows),
+        "best_valid_result_rows": str(best_valid_result_rows),
+        "best_valid_attempt_index": str(best_valid_attempt_index),
+        "best_valid_updated_at": best_valid_updated_at,
+        "best_valid_source": best_valid_source,
         "last_seen_classifier_rows": str(classifier_rows),
         "last_seen_result_rows": str(result_rows),
         "startup_failure_count": "0",

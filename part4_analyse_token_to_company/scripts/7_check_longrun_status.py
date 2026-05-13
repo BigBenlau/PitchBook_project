@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from collections import Counter, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,9 @@ DEFAULT_LATEST_JOB_JSON = PART4_DIR / "agent_runs" / "token_company_longrun_late
 DEFAULT_EVENTS_TAIL = 20
 DEFAULT_RUNNING_GRACE_SECONDS = 180
 DEFAULT_HEARTBEAT_GRACE_SECONDS = 900
+DEFAULT_WORKER_LOG_TAIL_LINES = 120
+DEFAULT_NOTABLE_EVENTS_TAIL = 25
+DEFAULT_RECENT_SEARCH_QUERY_LIMIT = 5
 DEFAULT_HOST_STATE_JSON = "supervisor_host_state.json"
 DEFAULT_HOST_EVENTS_LOG = "supervisor_host_events.log"
 SYSTEMD_RUNNING_STATES = {"active", "activating", "reloading"}
@@ -34,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs-dir", type=Path, default=None)
     parser.add_argument("--events-tail", type=int, default=DEFAULT_EVENTS_TAIL)
     parser.add_argument("--heartbeat-grace-seconds", type=int, default=DEFAULT_HEARTBEAT_GRACE_SECONDS)
+    parser.add_argument(
+        "--include-systemd-check",
+        action="store_true",
+        help="Optionally query systemd --user. Disabled by default because many sandboxed environments cannot access the user bus.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
 
@@ -42,9 +51,12 @@ def load_json(path: Path) -> dict[str, object] | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+    if not isinstance(payload, dict) or not payload:
+        return None
+    return payload
 
 
 def parse_timestamp(value: object) -> datetime | None:
@@ -89,6 +101,30 @@ def path_mtime_utc(path: Path) -> datetime | None:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     except OSError:
         return None
+
+
+def safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return default
+
+
+def batch_label(batch_file: object) -> str:
+    text = str(batch_file or "").strip()
+    if not text:
+        return ""
+    return Path(text).name
+
+
+def read_last_lines(path: Path, limit: int) -> list[str]:
+    if not path.exists():
+        return []
+    last_lines: deque[str] = deque(maxlen=max(limit, 1))
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            last_lines.append(line.rstrip("\n"))
+    return list(last_lines)
 
 
 def read_schedule_rows(path: Path) -> list[dict[str, str]]:
@@ -219,6 +255,215 @@ def read_systemd_unit_status(unit_name: str) -> dict[str, object]:
     return payload
 
 
+def parse_event_timestamp(line: str) -> datetime | None:
+    token = str(line or "").strip().split(" ", 1)[0]
+    if not token:
+        return None
+    return parse_timestamp(token)
+
+
+def parse_event_tag(line: str) -> str:
+    text = str(line or "")
+    start = text.find("[")
+    if start < 0:
+        return ""
+    end = text.find("]", start + 1)
+    if end < 0:
+        return ""
+    return text[start + 1:end].strip()
+
+
+def summarize_events_log(path: Path, *, notable_tail: int = DEFAULT_NOTABLE_EVENTS_TAIL) -> dict[str, object]:
+    if not path.exists():
+        return {
+            "available": False,
+            "path": str(path),
+            "last_event_at": None,
+            "event_counts": {},
+            "recent_notable_events": [],
+        }
+
+    notable_events: deque[str] = deque(maxlen=max(notable_tail, 1))
+    counters: Counter[str] = Counter()
+    last_event_at: datetime | None = None
+    last_event_line = ""
+    notable_prefixes = (
+        "worker:",
+        "split_batch:",
+        "tail_retry:",
+        "long_tail:",
+        "retry_cap:",
+        "collect:",
+        "queue_supervisor:",
+        "supervisor:",
+    )
+
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+
+            event_at = parse_event_timestamp(line)
+            if event_at is not None and (last_event_at is None or event_at > last_event_at):
+                last_event_at = event_at
+                last_event_line = line
+
+            tag = parse_event_tag(line)
+            if tag:
+                if tag.startswith(notable_prefixes):
+                    counters[tag] += 1
+                    notable_events.append(line)
+                elif tag == "command:end":
+                    counters[tag] += 1
+                    if "returncode=0" not in line:
+                        counters["command:end_nonzero"] += 1
+                        notable_events.append(line)
+                elif tag == "command:stderr":
+                    counters[tag] += 1
+                    notable_events.append(line)
+
+            stripped = line.strip()
+            if stripped.startswith("- batch_"):
+                counters["runtime_action_batch_line"] += 1
+                notable_events.append(line)
+            elif "Runtime actions:" in line:
+                counters["runtime_action_summary_line"] += 1
+                notable_events.append(line)
+            elif "Round runtime watch detected actions." in line:
+                counters["runtime_watch_detected_actions"] += 1
+                notable_events.append(line)
+
+    return {
+        "available": True,
+        "path": str(path),
+        "last_event_at": last_event_at.isoformat() if last_event_at else None,
+        "last_event_line": last_event_line,
+        "event_counts": dict(sorted(counters.items())),
+        "recent_notable_events": list(notable_events),
+    }
+
+
+def summarize_worker_log(path: Path, *, tail_lines: int = DEFAULT_WORKER_LOG_TAIL_LINES) -> dict[str, object]:
+    if not path.exists():
+        return {
+            "available": False,
+            "path": str(path),
+            "log_mtime": None,
+            "json_lines_tail": 0,
+            "web_search_completed_tail": 0,
+            "file_change_completed_tail": 0,
+            "agent_message_completed_tail": 0,
+            "recent_search_queries": [],
+            "last_agent_message": None,
+        }
+
+    counts: Counter[str] = Counter()
+    recent_queries: deque[str] = deque(maxlen=DEFAULT_RECENT_SEARCH_QUERY_LIMIT)
+    last_agent_message = ""
+    json_lines = 0
+    for line in read_last_lines(path, tail_lines):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        json_lines += 1
+        event_type = str(payload.get("type") or "").strip()
+        if event_type:
+            counts[event_type] += 1
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip()
+        if item_type and event_type:
+            counts[f"{item_type}:{event_type}"] += 1
+        if event_type != "item.completed":
+            continue
+        if item_type == "web_search":
+            query = str(item.get("query") or "").strip()
+            if query:
+                recent_queries.append(query)
+        elif item_type == "agent_message":
+            text = str(item.get("text") or "").strip()
+            if text:
+                last_agent_message = text
+
+    return {
+        "available": True,
+        "path": str(path),
+        "log_mtime": (path_mtime_utc(path).isoformat() if path_mtime_utc(path) else None),
+        "json_lines_tail": json_lines,
+        "web_search_completed_tail": counts.get("web_search:item.completed", 0),
+        "file_change_completed_tail": counts.get("file_change:item.completed", 0),
+        "agent_message_completed_tail": counts.get("agent_message:item.completed", 0),
+        "recent_search_queries": list(recent_queries),
+        "last_agent_message": last_agent_message or None,
+    }
+
+
+def parse_failure_counts(row: dict[str, str]) -> dict[str, int]:
+    raw = str(row.get("failure_counts_json") or "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(key): safe_int(value)
+        for key, value in payload.items()
+        if safe_int(value) > 0
+    }
+
+
+def build_progress_overview(schedule_rows: list[dict[str, str]]) -> dict[str, int]:
+    overview = {
+        "total_batches": len(schedule_rows),
+        "resolved_batches": 0,
+        "open_batches": 0,
+        "batches_with_classifier_rows": 0,
+        "batches_with_result_rows": 0,
+        "batches_with_failures": 0,
+        "total_classifier_rows": 0,
+        "total_result_rows": 0,
+    }
+    for row in schedule_rows:
+        status = effective_row_status(row)
+        if row_is_resolved(row):
+            overview["resolved_batches"] += 1
+        else:
+            overview["open_batches"] += 1
+        classifier_rows = max(
+            safe_int(row.get("last_seen_classifier_rows")),
+            safe_int(row.get("best_valid_classifier_rows")),
+        )
+        result_rows = max(
+            safe_int(row.get("last_seen_result_rows")),
+            safe_int(row.get("best_valid_result_rows")),
+        )
+        overview["total_classifier_rows"] += classifier_rows
+        overview["total_result_rows"] += result_rows
+        if classifier_rows > 0:
+            overview["batches_with_classifier_rows"] += 1
+        if result_rows > 0:
+            overview["batches_with_result_rows"] += 1
+        if (
+            safe_int(row.get("respawn_count")) > 0
+            or safe_int(row.get("startup_failure_count")) > 0
+            or safe_int(row.get("stall_failure_count")) > 0
+            or parse_failure_counts(row)
+            or status in {"retry_capped", "deferred_long_tail"}
+        ):
+            overview["batches_with_failures"] += 1
+    return overview
+
+
 def row_is_deferred_long_tail(row: dict[str, str]) -> bool:
     status = (row.get("status") or "").strip()
     completion_mode = (row.get("completion_mode") or "").strip()
@@ -229,19 +474,62 @@ def row_is_deferred_long_tail(row: dict[str, str]) -> bool:
     return completion_mode == "deferred_long_tail"
 
 
+def row_is_retry_capped(row: dict[str, str]) -> bool:
+    status = (row.get("status") or "").strip()
+    completion_mode = (row.get("completion_mode") or "").strip()
+    if status == "retry_capped":
+        return True
+    if status in {"completed", "deferred_long_tail"}:
+        return False
+    return completion_mode == "retry_capped"
+
+
 def effective_row_status(row: dict[str, str]) -> str:
+    raw_status = (row.get("status") or "").strip()
+    completion_mode = (row.get("completion_mode") or "").strip()
+    if raw_status in {
+        "partial_complete_retry_pending",
+        "worker_failed_retry_pending",
+        "schema_error_quarantined",
+        "collect_blocked",
+    }:
+        return raw_status
+    if completion_mode in {
+        "partial_complete_retry_pending",
+        "worker_failed_retry_pending",
+        "schema_error_quarantined",
+        "collect_blocked",
+    }:
+        return completion_mode
+    if row_is_retry_capped(row):
+        return "retry_capped"
     if row_is_deferred_long_tail(row):
         return "deferred_long_tail"
     return (row.get("status") or "").strip() or "unknown"
 
 
 def row_is_resolved(row: dict[str, str]) -> bool:
-    return effective_row_status(row) in {"completed", "deferred_long_tail"}
+    return effective_row_status(row) in {
+        "completed",
+        "deferred_long_tail",
+        "retry_capped",
+        "partial_complete_retry_pending",
+        "worker_failed_retry_pending",
+        "schema_error_quarantined",
+        "collect_blocked",
+    }
 
 
 def row_has_open_queue_work(row: dict[str, str]) -> bool:
     status = effective_row_status(row)
-    if status == "deferred_long_tail":
+    if status in {
+        "deferred_long_tail",
+        "retry_capped",
+        "partial_complete_retry_pending",
+        "worker_failed_retry_pending",
+        "schema_error_quarantined",
+        "collect_blocked",
+    }:
         return False
     if status == "completed" and str(row.get("collect_state") or "").strip() == "done":
         return False
@@ -268,14 +556,14 @@ def summarize_rounds(state: dict[str, object], schedule_rows: list[dict[str, str
         for row in rows:
             status = effective_row_status(row)
             status_counts[status] = status_counts.get(status, 0) + 1
-            try:
-                classifier_rows += int(row.get("last_seen_classifier_rows") or "0")
-            except ValueError:
-                pass
-            try:
-                result_rows += int(row.get("last_seen_result_rows") or "0")
-            except ValueError:
-                pass
+            classifier_rows += max(
+                safe_int(row.get("last_seen_classifier_rows")),
+                safe_int(row.get("best_valid_classifier_rows")),
+            )
+            result_rows += max(
+                safe_int(row.get("last_seen_result_rows")),
+                safe_int(row.get("best_valid_result_rows")),
+            )
             if not row_is_resolved(row):
                 all_completed = False
         output.append(
@@ -290,9 +578,15 @@ def summarize_rounds(state: dict[str, object], schedule_rows: list[dict[str, str
     return output
 
 
-def current_round_batches(schedule_rows: list[dict[str, str]], current_round_index: int | None) -> list[dict[str, object]]:
+def current_round_batches(
+    schedule_rows: list[dict[str, str]],
+    current_round_index: int | None,
+    *,
+    worker_log_by_batch: dict[str, dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
     if current_round_index is None:
         return []
+    worker_log_by_batch = worker_log_by_batch or {}
     rows: list[dict[str, object]] = []
     for row in schedule_rows:
         try:
@@ -301,14 +595,49 @@ def current_round_batches(schedule_rows: list[dict[str, str]], current_round_ind
             continue
         if round_index != current_round_index:
             continue
+        batch_file = row.get("batch_file") or ""
+        status = effective_row_status(row)
+        failure_counts = parse_failure_counts(row)
+        live_classifier_rows = safe_int(row.get("last_seen_classifier_rows"))
+        live_result_rows = safe_int(row.get("last_seen_result_rows"))
+        best_valid_classifier_rows = safe_int(row.get("best_valid_classifier_rows"))
+        best_valid_result_rows = safe_int(row.get("best_valid_result_rows"))
+        classifier_rows = max(live_classifier_rows, best_valid_classifier_rows)
+        result_rows = max(live_result_rows, best_valid_result_rows)
         rows.append(
             {
-                "batch_file": row.get("batch_file") or "",
-                "status": effective_row_status(row),
+                "batch_file": batch_file,
+                "batch_name": batch_label(batch_file),
+                "status": status,
                 "active_attempt": row.get("active_attempt") or "",
-                "classifier_rows": int(row.get("last_seen_classifier_rows") or "0"),
-                "result_rows": int(row.get("last_seen_result_rows") or "0"),
+                "attempt_index": safe_int(row.get("attempt_index")),
+                "classifier_rows": classifier_rows,
+                "result_rows": result_rows,
+                "live_classifier_rows": live_classifier_rows,
+                "live_result_rows": live_result_rows,
+                "best_valid_classifier_rows": best_valid_classifier_rows,
+                "best_valid_result_rows": best_valid_result_rows,
+                "best_valid_attempt_index": safe_int(row.get("best_valid_attempt_index")),
+                "best_valid_updated_at": row.get("best_valid_updated_at") or "",
+                "best_valid_source": row.get("best_valid_source") or "",
                 "prepared_reason": row.get("prepared_reason") or "",
+                "respawn_count": safe_int(row.get("respawn_count")),
+                "startup_failure_count": safe_int(row.get("startup_failure_count")),
+                "stall_failure_count": safe_int(row.get("stall_failure_count")),
+                "last_failure_type": row.get("last_failure_type") or "",
+                "last_rerun_reason": row.get("last_rerun_reason") or "",
+                "health_state": row.get("health_state") or "",
+                "last_worker_activity_at": row.get("last_worker_activity_at") or "",
+                "last_worker_activity_type": row.get("last_worker_activity_type") or "",
+                "last_worker_activity_source": row.get("last_worker_activity_source") or "",
+                "soft_timeout_warned_at": row.get("soft_timeout_warned_at") or "",
+                "last_timeout_warning_reason": row.get("last_timeout_warning_reason") or "",
+                "next_eligible_retry_at": row.get("next_eligible_retry_at") or "",
+                "first_row_at": row.get("first_row_at") or "",
+                "last_progress_at": row.get("last_progress_at") or "",
+                "deferred_reason": row.get("deferred_reason") or "",
+                "failure_counts": failure_counts,
+                "worker_log_activity": worker_log_by_batch.get(batch_file),
             }
         )
     rows.sort(key=lambda item: str(item["batch_file"]))
@@ -376,49 +705,46 @@ def derive_job_status(
     *,
     latest_job: dict[str, object] | None,
     state: dict[str, object] | None,
+    schedule_rows: list[dict[str, str]],
     managed_processes: list[dict[str, object]],
     heartbeat: dict[str, str] | None,
     heartbeat_grace_seconds: int,
+    event_summary: dict[str, object] | None,
+    progress_overview: dict[str, int] | None,
     host_process_lines: list[str],
     systemd_unit: dict[str, object] | None,
-) -> str:
-    if systemd_unit and bool(systemd_unit.get("queried")):
-        active_state = str(systemd_unit.get("ActiveState") or "").strip()
-        if active_state in SYSTEMD_RUNNING_STATES:
-            return "running"
-        if active_state == "failed":
-            return "failed"
-        if active_state in {"inactive", "deactivating"}:
-            if latest_job is None and state is None:
-                return "missing"
-            if not managed_processes and not host_process_lines:
-                phase = str((state or {}).get("phase") or "").strip().lower()
-                if phase == "completed":
-                    return "completed"
-                if phase == "abandoned":
-                    return "abandoned_by_supervisor"
-                return "stopped_or_stale"
-
+) -> tuple[str, str]:
     if state is None:
         if latest_job is None:
-            return "missing"
-        return "launched_no_state"
+            return "missing", "No latest job metadata and no supervisor_state.json were found."
+        return "launched_no_state", "Latest job exists, but supervisor_state.json is missing."
 
     phase = str(state.get("phase") or "").strip().lower()
     if phase == "completed":
-        return "completed"
+        return "completed", "supervisor_state.json reports phase=completed."
     if phase == "abandoned":
-        return "abandoned_by_supervisor"
+        return "abandoned_by_supervisor", "supervisor_state.json reports phase=abandoned."
     if phase in {"failed", "error"}:
-        return "failed"
+        return "failed", f"supervisor_state.json reports phase={phase}."
 
     latest_status = str((latest_job or {}).get("status") or "").strip().lower()
     if latest_status == "abandoned_by_supervisor":
-        return "abandoned_by_supervisor"
+        return "abandoned_by_supervisor", "latest job metadata reports abandoned_by_supervisor."
     if latest_status == "failed":
-        return "failed"
+        return "failed", "latest job metadata reports failed."
     if latest_status == "completed":
-        return "completed"
+        return "completed", "latest job metadata reports completed."
+
+    open_rows = [row for row in schedule_rows if row_has_open_queue_work(row)]
+    resolved_rows = [row for row in schedule_rows if row_is_resolved(row)]
+    batches_with_rows = (progress_overview or {}).get("batches_with_result_rows", 0)
+    batches_with_failures = (progress_overview or {}).get("batches_with_failures", 0)
+    event_counts = {}
+    if isinstance(event_summary, dict) and isinstance(event_summary.get("event_counts"), dict):
+        event_counts = {
+            str(key): safe_int(value)
+            for key, value in event_summary["event_counts"].items()
+        }
 
     alive_workers = [
         proc
@@ -426,31 +752,51 @@ def derive_job_status(
         if is_pid_running(proc.get("pid")) or is_pgid_running(proc.get("pgid"))
     ]
     if alive_workers:
-        return "running"
+        if batches_with_failures > 0 or event_counts.get("worker:dead_rerun", 0) > 0:
+            return "running_with_runtime_failures", "Visible worker processes are alive and recent failures were recorded."
+        if batches_with_rows > 0:
+            return "running_with_progress", "Visible worker processes are alive and result rows are increasing."
+        return "running", "Visible worker processes are alive."
 
     if host_process_lines:
-        return "running"
+        if batches_with_failures > 0 or event_counts.get("worker:dead_rerun", 0) > 0:
+            return "running_with_runtime_failures", "Host process scan found active run commands and recent failures were recorded."
+        if batches_with_rows > 0:
+            return "running_with_progress", "Host process scan found active run commands and result rows are increasing."
+        return "running", "Host process scan found active run commands."
 
     heartbeat_at = parse_timestamp((heartbeat or {}).get("timestamp"))
     now = datetime.now(timezone.utc)
     if heartbeat_at is not None:
         age_seconds = (now - heartbeat_at).total_seconds()
         if age_seconds <= heartbeat_grace_seconds:
-            heartbeat_source = str((heartbeat or {}).get("source") or "")
-            if not alive_workers and not host_process_lines:
-                if heartbeat_source.startswith("worker_log:"):
-                    return "worker_log_recent_but_supervisor_unconfirmed"
-                return "supervisor_recently_updated_unconfirmed"
+            if open_rows:
+                if batches_with_failures > 0 or event_counts.get("worker:dead_rerun", 0) > 0:
+                    return "running_with_runtime_failures", "Recent worker/event log heartbeat exists and at least one batch has reruns or failure counters."
+                if batches_with_rows > 0:
+                    return "running_with_progress", "Recent worker/event log heartbeat exists and at least one batch has result rows."
+                return "running_log_confirmed", "Recent log heartbeat exists for unresolved schedule rows."
+            if schedule_rows and len(resolved_rows) == len(schedule_rows):
+                return "completed", "All schedule rows are resolved and recent logs exist."
 
     updated_at = parse_timestamp(state.get("updated_at"))
     if updated_at is not None:
         age_seconds = (now - updated_at).total_seconds()
-        if age_seconds <= DEFAULT_RUNNING_GRACE_SECONDS:
-            return "supervisor_recently_updated_unconfirmed"
+        if age_seconds <= DEFAULT_RUNNING_GRACE_SECONDS and open_rows:
+            if batches_with_failures > 0:
+                return "running_with_runtime_failures", "supervisor_state.json was updated recently and unresolved rows already show failures."
+            return "running_log_confirmed", "supervisor_state.json was updated recently for unresolved rows."
 
     if latest_job and is_pid_running(latest_job.get("pid")):
-        return "running_pid_visible"
-    return "stopped_or_stale"
+        return "running_pid_visible", "The launcher PID from latest job metadata is still visible."
+
+    if schedule_rows and len(resolved_rows) == len(schedule_rows):
+        return "completed", "All schedule rows are resolved."
+    if open_rows:
+        if batches_with_rows > 0:
+            return "stalled_after_partial_progress", "Unresolved rows remain, but no recent runtime heartbeat is visible after partial progress."
+        return "stopped_or_stale", "Unresolved rows remain, but there is no recent runtime heartbeat in logs or metadata."
+    return "stopped_or_stale", "No running signal is visible in logs, metadata, or process checks."
 
 
 def build_payload(args: argparse.Namespace) -> dict[str, object]:
@@ -519,12 +865,23 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
 
     rounds = summarize_rounds(state or {}, schedule_rows)
     unit_name = str((latest_job or {}).get("unit_name") or "")
-    systemd_unit = read_systemd_unit_status(unit_name) if unit_name else {
-        "available": False,
-        "queried": False,
-        "unit_name": "",
-    }
+    if args.include_systemd_check and unit_name:
+        systemd_unit = read_systemd_unit_status(unit_name)
+    else:
+        systemd_unit = {
+            "available": False,
+            "queried": False,
+            "unit_name": unit_name,
+            "disabled": not args.include_systemd_check,
+        }
     host_process_info = collect_host_process_lines(runs_dir)
+    events_summary = summarize_events_log(runs_dir / "supervisor_events.log") if runs_dir is not None else {
+        "available": False,
+        "path": None,
+        "last_event_at": None,
+        "event_counts": {},
+        "recent_notable_events": [],
+    }
     heartbeat_points = collect_heartbeat_points(
         latest_job=latest_job,
         state=state,
@@ -532,6 +889,69 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         runs_dir=runs_dir,
     )
     heartbeat = latest_heartbeat(heartbeat_points)
+    worker_log_activity: list[dict[str, object]] = []
+    worker_log_by_batch: dict[str, dict[str, object]] = {}
+    for item in managed_processes:
+        log_path = str(item.get("log_path") or "").strip()
+        batch_file = str(item.get("batch_file") or "").strip()
+        summary = summarize_worker_log(Path(log_path)) if log_path else {
+            "available": False,
+            "path": log_path,
+            "log_mtime": None,
+            "json_lines_tail": 0,
+            "web_search_completed_tail": 0,
+            "file_change_completed_tail": 0,
+            "agent_message_completed_tail": 0,
+            "recent_search_queries": [],
+            "last_agent_message": None,
+        }
+        activity = {
+            "batch_file": batch_file,
+            "batch_name": batch_label(batch_file),
+            "attempt_index": item.get("attempt_index"),
+            "round_index": item.get("round_index"),
+            "pid_alive": item.get("pid_alive"),
+            "pgid_alive": item.get("pgid_alive"),
+            **summary,
+        }
+        worker_log_activity.append(activity)
+        if batch_file:
+            worker_log_by_batch[batch_file] = activity
+
+    for row in schedule_rows:
+        batch_file = str(row.get("batch_file") or "").strip()
+        if not batch_file or batch_file in worker_log_by_batch:
+            continue
+        active_attempt = str(row.get("active_attempt") or "").strip()
+        if not active_attempt:
+            continue
+        log_path = Path(active_attempt) / "supervisor_worker.log"
+        summary = summarize_worker_log(log_path)
+        activity = {
+            "batch_file": batch_file,
+            "batch_name": batch_label(batch_file),
+            "attempt_index": safe_int(row.get("attempt_index")),
+            "round_index": safe_int(row.get("round_index")),
+            "pid_alive": False,
+            "pgid_alive": False,
+            **summary,
+        }
+        worker_log_by_batch[batch_file] = activity
+        worker_log_activity.append(activity)
+
+    progress_overview = build_progress_overview(schedule_rows)
+    status, status_reason = derive_job_status(
+        latest_job=latest_job,
+        state=state,
+        schedule_rows=schedule_rows,
+        managed_processes=managed_processes_raw,
+        heartbeat=heartbeat,
+        heartbeat_grace_seconds=args.heartbeat_grace_seconds,
+        event_summary=events_summary,
+        progress_overview=progress_overview,
+        host_process_lines=host_process_info["lines"],
+        systemd_unit=systemd_unit,
+    )
     pid_visibility = "unknown"
     if managed_processes:
         pid_visibility = (
@@ -540,15 +960,9 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
             else "not_visible_from_current_context"
         )
     payload = {
-        "status": derive_job_status(
-            latest_job=latest_job,
-            state=state,
-            managed_processes=managed_processes_raw,
-            heartbeat=heartbeat,
-            heartbeat_grace_seconds=args.heartbeat_grace_seconds,
-            host_process_lines=host_process_info["lines"],
-            systemd_unit=systemd_unit,
-        ),
+        "status": status,
+        "status_reason": status_reason,
+        "status_basis": "schedule.csv + supervisor_state.json + supervisor_events.log + worker logs",
         "latest_job_json": str(args.latest_job_json.resolve()),
         "runs_dir": str(runs_dir) if runs_dir is not None else None,
         "launched_at": latest_job.get("launched_at") if latest_job else None,
@@ -582,9 +996,16 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         "tail_retry_queue": state.get("tail_retry_queue") if state else None,
         "collect_queue": state.get("collect_queue") if state else None,
         "deferred_queue": state.get("deferred_queue") if state else None,
+        "progress_overview": progress_overview,
+        "events_summary": events_summary,
         "active_workers": managed_processes,
+        "worker_log_activity": worker_log_activity,
         "round_summaries": rounds,
-        "current_round_batches": current_round_batches(schedule_rows, current_round_index),
+        "current_round_batches": current_round_batches(
+            schedule_rows,
+            current_round_index,
+            worker_log_by_batch=worker_log_by_batch,
+        ),
         "recent_events": events_tail,
     }
     return payload
@@ -592,6 +1013,8 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
 
 def print_human(payload: dict[str, object]) -> None:
     print(f"status: {payload.get('status')}")
+    print(f"status_reason: {payload.get('status_reason')}")
+    print(f"status_basis: {payload.get('status_basis')}")
     if payload.get("unit_name"):
         print(f"unit_name: {payload.get('unit_name')}")
     print(f"runs_dir: {payload.get('runs_dir')}")
@@ -627,7 +1050,8 @@ def print_human(payload: dict[str, object]) -> None:
             f"available={systemd_unit_check.get('available')} "
             f"queried={systemd_unit_check.get('queried')} "
             f"active={systemd_unit_check.get('ActiveState')} "
-            f"sub={systemd_unit_check.get('SubState')}"
+            f"sub={systemd_unit_check.get('SubState')} "
+            f"disabled={systemd_unit_check.get('disabled')}"
         )
     heartbeat = payload.get("latest_heartbeat")
     if isinstance(heartbeat, dict):
@@ -635,6 +1059,17 @@ def print_human(payload: dict[str, object]) -> None:
             "latest_heartbeat: "
             f"{heartbeat.get('timestamp')} "
             f"from {heartbeat.get('source')}"
+        )
+    progress_overview = payload.get("progress_overview")
+    if isinstance(progress_overview, dict):
+        print(
+            "progress_overview: "
+            f"total_batches={progress_overview.get('total_batches')} "
+            f"open_batches={progress_overview.get('open_batches')} "
+            f"resolved_batches={progress_overview.get('resolved_batches')} "
+            f"batches_with_result_rows={progress_overview.get('batches_with_result_rows')} "
+            f"batches_with_failures={progress_overview.get('batches_with_failures')} "
+            f"total_result_rows={progress_overview.get('total_result_rows')}"
         )
     print(f"current_round_index: {payload.get('current_round_index')}")
     if payload.get("max_workers") is not None:
@@ -698,6 +1133,19 @@ def print_human(payload: dict[str, object]) -> None:
             for line in lines[:10]:
                 print(f"  {line}")
 
+    events_summary = payload.get("events_summary")
+    if isinstance(events_summary, dict):
+        print(
+            "events_summary: "
+            f"last_event_at={events_summary.get('last_event_at')} "
+            f"event_counts={events_summary.get('event_counts')}"
+        )
+        notable = events_summary.get("recent_notable_events")
+        if isinstance(notable, list) and notable:
+            print("recent_notable_events:")
+            for line in notable[-10:]:
+                print(f"  {line}")
+
     round_summaries = payload.get("round_summaries")
     if isinstance(round_summaries, list) and round_summaries:
         print("round_summaries:")
@@ -721,13 +1169,58 @@ def print_human(payload: dict[str, object]) -> None:
                 continue
             print(
                 "  - "
-                f"batch={item.get('batch_file')} "
+                f"batch={item.get('batch_name') or item.get('batch_file')} "
                 f"status={item.get('status')} "
-                f"attempt={item.get('active_attempt')} "
+                f"attempt_index={item.get('attempt_index')} "
                 f"classifier_rows={item.get('classifier_rows')} "
                 f"result_rows={item.get('result_rows')} "
+                f"best_valid_classifier_rows={item.get('best_valid_classifier_rows')} "
+                f"best_valid_result_rows={item.get('best_valid_result_rows')} "
+                f"respawn_count={item.get('respawn_count')} "
+                f"startup_failures={item.get('startup_failure_count')} "
+                f"stall_failures={item.get('stall_failure_count')} "
+                f"health_state={item.get('health_state')} "
+                f"last_failure_type={item.get('last_failure_type')} "
+                f"last_rerun_reason={item.get('last_rerun_reason')} "
                 f"prepared_reason={item.get('prepared_reason')}"
             )
+            if item.get("best_valid_updated_at"):
+                print(
+                    "    best_valid: "
+                    f"attempt_index={item.get('best_valid_attempt_index')} "
+                    f"updated_at={item.get('best_valid_updated_at')} "
+                    f"source={item.get('best_valid_source')}"
+                )
+            if item.get("last_timeout_warning_reason"):
+                print(
+                    "    health_warning: "
+                    f"reason={item.get('last_timeout_warning_reason')} "
+                    f"warned_at={item.get('soft_timeout_warned_at')} "
+                    f"next_retry_at={item.get('next_eligible_retry_at')}"
+                )
+            if item.get("last_worker_activity_at"):
+                print(
+                    "    last_worker_activity: "
+                    f"at={item.get('last_worker_activity_at')} "
+                    f"type={item.get('last_worker_activity_type')} "
+                    f"source={item.get('last_worker_activity_source')}"
+                )
+            worker_activity = item.get("worker_log_activity")
+            if isinstance(worker_activity, dict):
+                print(
+                    "    worker_log: "
+                    f"log_mtime={worker_activity.get('log_mtime')} "
+                    f"web_search_completed_tail={worker_activity.get('web_search_completed_tail')} "
+                    f"file_change_completed_tail={worker_activity.get('file_change_completed_tail')} "
+                    f"agent_message_completed_tail={worker_activity.get('agent_message_completed_tail')}"
+                )
+                if worker_activity.get("last_agent_message"):
+                    print(f"    last_agent_message: {worker_activity.get('last_agent_message')}")
+                recent_queries = worker_activity.get("recent_search_queries")
+                if isinstance(recent_queries, list) and recent_queries:
+                    print("    recent_search_queries:")
+                    for query in recent_queries[-3:]:
+                        print(f"      {query}")
 
     recent_events = payload.get("recent_events")
     if isinstance(recent_events, list) and recent_events:
