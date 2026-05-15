@@ -18,6 +18,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PART4_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART4_DIR.parent
 DEFAULT_FINAL_DIR = PART4_DIR / "agent_runs" / "token_company"
+DEFAULT_OPS_DIR = PART4_DIR / "agent_runs" / "token_company_ops"
 LATEST_JOB_JSON = PART4_DIR / "agent_runs" / "token_company_longrun_latest.json"
 
 RESULT_CSV_COLUMNS = [
@@ -164,6 +165,21 @@ class CheckReport:
         }
 
 
+def ensure_ops_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def ops_report_path(ops_dir: Path, runs_dir: Path, stem: str, *, suffix: str = ".json") -> Path:
+    safe_run_name = runs_dir.name or "latest"
+    return ensure_ops_dir(ops_dir) / f"{safe_run_name}.{stem}{suffix}"
+
+
+def ops_backup_path(ops_dir: Path, source_path: Path, stamp: str) -> Path:
+    safe_source = str(source_path).replace("/", "__")
+    return ensure_ops_dir(ops_dir) / f"{safe_source}.auto_check_metadata_{stamp}.bak"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -173,6 +189,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--runs-dir", type=Path, help="Run directory containing schedule.csv.")
     parser.add_argument("--final-dir", type=Path, default=DEFAULT_FINAL_DIR)
+    parser.add_argument("--ops-dir", type=Path, default=DEFAULT_OPS_DIR)
     parser.add_argument(
         "--batch-file",
         action="append",
@@ -228,7 +245,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report-json",
         type=Path,
-        help="Report path. Defaults to <runs-dir>/auto_check_collect_report.json.",
+        help="Report path. Defaults to token_company_ops/<runs_dir>.auto_check_collect_report.json.",
     )
     return parser.parse_args()
 
@@ -760,11 +777,11 @@ def load_final_indexes(final_dir: Path) -> tuple[dict[str, Any], set[int], set[i
     )
 
 
-def inspect_backlogs(final_dir: Path, scoped_batch_files: set[str]) -> tuple[dict[str, Any], list[str]]:
+def inspect_backlogs(ops_dir: Path, scoped_batch_files: set[str]) -> tuple[dict[str, Any], list[str]]:
     scoped_entries: list[str] = []
     summary: dict[str, Any] = {}
     for filename in BACKLOG_FILENAMES:
-        path = final_dir / filename
+        path = ops_dir / filename
         header, rows = load_csv(path)
         scoped = [
             row for row in rows
@@ -784,6 +801,7 @@ def inspect_backlogs(final_dir: Path, scoped_batch_files: set[str]) -> tuple[dic
 def run_checks(
     runs_dir: Path,
     final_dir: Path,
+    ops_dir: Path,
     batch_files: list[str],
     require_final_coverage: bool,
     strict_metadata: bool,
@@ -850,7 +868,7 @@ def run_checks(
         if missing_classifier:
             report.final_errors.append(f"Final classifier_results.csv missing task_index {missing_classifier[:30]}")
 
-    backlog_summary, scoped_backlogs = inspect_backlogs(final_dir, scoped_batch_files)
+    backlog_summary, scoped_backlogs = inspect_backlogs(ops_dir, scoped_batch_files)
     report.backlog_summary = backlog_summary
     if strict_metadata and scoped_backlogs:
         report.metadata_errors.append("Scoped batches still appear in backlog files: " + ", ".join(scoped_backlogs))
@@ -914,14 +932,14 @@ def run_collect(runs_dir: Path, batch_files: list[str], require_verification: bo
     return completed.returncode
 
 
-def fix_metadata(runs_dir: Path, final_dir: Path, batch_files: list[str]) -> dict[str, Any]:
+def fix_metadata(runs_dir: Path, final_dir: Path, ops_dir: Path, batch_files: list[str]) -> dict[str, Any]:
     schedule_csv = runs_dir / "schedule.csv"
     schedule_header, schedule_rows = load_schedule(runs_dir)
     scoped_rows = resolve_batch_scope(schedule_rows, batch_files)
     scoped_batch_files = {str(row.get("batch_file") or "") for row in scoped_rows}
     scoped_basenames = {batch_key(value) for value in scoped_batch_files}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    shutil.copy2(schedule_csv, schedule_csv.with_name(schedule_csv.name + f".auto_check_metadata_{stamp}.bak"))
+    shutil.copy2(schedule_csv, ops_backup_path(ops_dir, schedule_csv, stamp))
     collected_at = utc_now()
 
     updated_batches: list[str] = []
@@ -952,11 +970,11 @@ def fix_metadata(runs_dir: Path, final_dir: Path, batch_files: list[str]) -> dic
 
     backlog_removed: dict[str, int] = {}
     for filename in BACKLOG_FILENAMES:
-        path = final_dir / filename
+        path = ops_dir / filename
         header, rows = load_csv(path)
         if not rows:
             continue
-        shutil.copy2(path, path.with_name(path.name + f".auto_check_metadata_{stamp}.bak"))
+        shutil.copy2(path, ops_backup_path(ops_dir, path, stamp))
         kept = [
             row for row in rows
             if str(row.get("batch_file") or "") not in scoped_batch_files
@@ -978,7 +996,7 @@ def fix_metadata(runs_dir: Path, final_dir: Path, batch_files: list[str]) -> dic
 
 def cleanup_intermediates(
     runs_dir: Path,
-    final_dir: Path,
+    ops_dir: Path,
     batch_files: list[str],
     dry_run: bool,
 ) -> dict[str, Any]:
@@ -1017,7 +1035,7 @@ def cleanup_intermediates(
         for path in runs_dir.glob(pattern):
             if path.is_file():
                 delete_files.add(path)
-        for path in final_dir.glob(pattern):
+        for path in ops_dir.glob(pattern):
             if path.is_file():
                 delete_files.add(path)
 
@@ -1049,7 +1067,7 @@ def cleanup_intermediates(
     }
 
 
-def update_latest_after_runs_dir_delete(runs_dir: Path, final_dir: Path) -> dict[str, Any]:
+def update_latest_after_runs_dir_delete(runs_dir: Path, final_dir: Path, ops_dir: Path) -> dict[str, Any]:
     if not LATEST_JOB_JSON.exists():
         return {"latest_job_exists": False, "updated": False}
     try:
@@ -1064,7 +1082,7 @@ def update_latest_after_runs_dir_delete(runs_dir: Path, final_dir: Path) -> dict
             "reason": "latest_job_points_elsewhere",
             "latest_runs_dir": raw_runs_dir,
         }
-    backup = LATEST_JOB_JSON.with_name(
+    backup = ensure_ops_dir(ops_dir) / (
         LATEST_JOB_JSON.name
         + ".parallel_deleted_"
         + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -1087,7 +1105,12 @@ def update_latest_after_runs_dir_delete(runs_dir: Path, final_dir: Path) -> dict
     return {"latest_job_exists": True, "updated": True, "backup": str(backup)}
 
 
-def delete_runs_dir_after_checks(runs_dir: Path, final_dir: Path, report_payload: dict[str, Any]) -> dict[str, Any]:
+def delete_runs_dir_after_checks(
+    runs_dir: Path,
+    final_dir: Path,
+    ops_dir: Path,
+    report_payload: dict[str, Any],
+) -> dict[str, Any]:
     if not runs_dir.exists():
         return {"deleted": False, "reason": "runs_dir_missing", "runs_dir": str(runs_dir)}
     try:
@@ -1099,7 +1122,7 @@ def delete_runs_dir_after_checks(runs_dir: Path, final_dir: Path, report_payload
     if not (runs_dir / "schedule.csv").exists():
         raise SystemExit(f"Refusing to delete runs_dir without schedule.csv marker: {runs_dir}")
 
-    deletion_report = final_dir / (
+    deletion_report = ensure_ops_dir(ops_dir) / (
         "parallel_run_deleted_"
         + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         + ".json"
@@ -1115,7 +1138,7 @@ def delete_runs_dir_after_checks(runs_dir: Path, final_dir: Path, report_payload
         json.dumps(deletion_payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    latest_update = update_latest_after_runs_dir_delete(runs_dir, final_dir)
+    latest_update = update_latest_after_runs_dir_delete(runs_dir, final_dir, ops_dir)
     shutil.rmtree(runs_dir)
     return {
         "deleted": True,
@@ -1129,19 +1152,17 @@ def main() -> None:
     args = parse_args()
     runs_dir = (args.runs_dir or find_latest_runs_dir()).resolve()
     final_dir = args.final_dir.resolve()
+    ops_dir = ensure_ops_dir(args.ops_dir.resolve())
     if args.report_json:
         report_path = args.report_json.resolve()
     elif args.delete_runs_dir:
-        report_path = (
-            final_dir
-            / (
-                "auto_check_collect_before_delete_"
-                + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-                + ".json"
-            )
+        report_path = ops_report_path(
+            ops_dir,
+            runs_dir,
+            "auto_check_collect_before_delete_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"),
         ).resolve()
     else:
-        report_path = (runs_dir / "auto_check_collect_report.json").resolve()
+        report_path = ops_report_path(ops_dir, runs_dir, "auto_check_collect_report").resolve()
 
     _, schedule_rows = load_schedule(runs_dir)
     scoped_rows = resolve_batch_scope(schedule_rows, args.batch_file)
@@ -1150,6 +1171,7 @@ def main() -> None:
     pre_report = run_checks(
         runs_dir=runs_dir,
         final_dir=final_dir,
+        ops_dir=ops_dir,
         batch_files=batch_files,
         require_final_coverage=False,
         strict_metadata=False,
@@ -1178,6 +1200,7 @@ def main() -> None:
     post_report = run_checks(
         runs_dir=runs_dir,
         final_dir=final_dir,
+        ops_dir=ops_dir,
         batch_files=batch_files,
         require_final_coverage=require_final_coverage,
         strict_metadata=False,
@@ -1193,7 +1216,7 @@ def main() -> None:
 
     metadata_fix_summary: dict[str, Any] | None = None
     if args.fix_metadata:
-        metadata_fix_summary = fix_metadata(runs_dir, final_dir, batch_files)
+        metadata_fix_summary = fix_metadata(runs_dir, final_dir, ops_dir, batch_files)
         print("metadata_fix: applied")
         print(json.dumps(metadata_fix_summary, ensure_ascii=False, indent=2))
 
@@ -1201,7 +1224,7 @@ def main() -> None:
     if args.cleanup_intermediates or args.cleanup_dry_run:
         cleanup_summary = cleanup_intermediates(
             runs_dir=runs_dir,
-            final_dir=final_dir,
+            ops_dir=ops_dir,
             batch_files=batch_files,
             dry_run=args.cleanup_dry_run and not args.cleanup_intermediates,
         )
@@ -1211,6 +1234,7 @@ def main() -> None:
     final_report = run_checks(
         runs_dir=runs_dir,
         final_dir=final_dir,
+        ops_dir=ops_dir,
         batch_files=batch_files,
         require_final_coverage=require_final_coverage,
         strict_metadata=args.strict_metadata or args.fix_metadata,
@@ -1224,6 +1248,7 @@ def main() -> None:
             delete_summary = delete_runs_dir_after_checks(
                 runs_dir=runs_dir,
                 final_dir=final_dir,
+                ops_dir=ops_dir,
                 report_payload=final_report.to_dict(),
             )
             print("delete_runs_dir:")

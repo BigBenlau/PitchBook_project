@@ -56,9 +56,9 @@ def load_round_supervisor_module() -> Any:
 
 
 ROUND = load_round_supervisor_module()
-GLOBAL_RETRY_PENDING_BATCHES_CSV = ROUND.DEFAULT_FINAL_DIR / "retry_pending_batches.csv"
-GLOBAL_SCHEMA_ERROR_BATCHES_CSV = ROUND.DEFAULT_FINAL_DIR / "schema_error_batches.csv"
-GLOBAL_COLLECT_BLOCKED_BATCHES_CSV = ROUND.DEFAULT_FINAL_DIR / "collect_blocked_batches.csv"
+GLOBAL_RETRY_PENDING_BATCHES_CSV = ROUND.DEFAULT_OPS_DIR / "retry_pending_batches.csv"
+GLOBAL_SCHEMA_ERROR_BATCHES_CSV = ROUND.DEFAULT_OPS_DIR / "schema_error_batches.csv"
+GLOBAL_COLLECT_BLOCKED_BATCHES_CSV = ROUND.DEFAULT_OPS_DIR / "collect_blocked_batches.csv"
 
 
 def parse_args() -> argparse.Namespace:
@@ -882,7 +882,7 @@ def run_collect_for_batches(
         "--classifier-results-csv",
         str((ROUND.DEFAULT_FINAL_DIR / "classifier_results.csv").resolve()),
         "--verification-findings-csv",
-        str((ROUND.DEFAULT_FINAL_DIR / "verification_findings.csv").resolve()),
+        str((ROUND.DEFAULT_OPS_DIR / "verification_findings.csv").resolve()),
         "--checkpoint-json",
         str((runs_dir / ROUND.DEFAULT_COLLECT_CHECKPOINT_JSON).resolve()),
     ]
@@ -1455,7 +1455,7 @@ def main() -> None:
     state_json = ROUND.resolve_runs_path(runs_dir, args.state_json, ROUND.DEFAULT_STATE_JSON)
     registry_json = ROUND.resolve_runs_path(runs_dir, args.registry_json, ROUND.DEFAULT_REGISTRY_JSON)
     events_log = ROUND.resolve_runs_path(runs_dir, args.events_log, ROUND.DEFAULT_EVENTS_LOG)
-    lock_file = runs_dir / ROUND.DEFAULT_LOCK_FILE
+    lock_file = ROUND.supervisor_lock_path(runs_dir)
     target_rounds = list(range(args.start_round_index, args.start_round_index + args.round_count))
     ROUND.set_supervisor_context(
         runs_dir=runs_dir,

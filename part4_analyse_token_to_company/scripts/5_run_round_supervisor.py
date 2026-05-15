@@ -24,8 +24,11 @@ from part4_schedule_io import write_schedule_csv
 SCRIPT_DIR = Path(__file__).resolve().parent
 PART4_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART4_DIR.parent
-DEFAULT_RUNS_DIR = PART4_DIR / "agent_runs" / "token_company_parallel"
+DEFAULT_AGENT_RUNS_DIR = PART4_DIR / "agent_runs"
+DEFAULT_LATEST_JOB_JSON = DEFAULT_AGENT_RUNS_DIR / "token_company_longrun_latest.json"
+DEFAULT_FALLBACK_RUNS_DIR = DEFAULT_AGENT_RUNS_DIR / "token_company_parallel_eval_current"
 DEFAULT_FINAL_DIR = PART4_DIR / "agent_runs" / "token_company"
+DEFAULT_OPS_DIR = PART4_DIR / "agent_runs" / "token_company_ops"
 DEFAULT_SCHEDULE_CSV = "schedule.csv"
 DEFAULT_STATE_JSON = "supervisor_state.json"
 DEFAULT_REGISTRY_JSON = "supervisor_registry.json"
@@ -52,10 +55,10 @@ SPLIT_MERGED_RESULTS_FILE_NAME = "merged_results.csv"
 SPLIT_MERGE_MANIFEST_FILE_NAME = "merge_manifest.json"
 DEFERRED_LONG_TAIL_CSV = "deferred_long_tail_batches.csv"
 DEFERRED_LONG_TAIL_MD = "deferred_long_tail_batches.md"
-GLOBAL_LONG_TAIL_BACKLOG_CSV = DEFAULT_FINAL_DIR / "long_tail_batches_pending.csv"
+GLOBAL_LONG_TAIL_BACKLOG_CSV = DEFAULT_OPS_DIR / "long_tail_batches_pending.csv"
 RETRY_CAPPED_CSV = "retry_capped_batches.csv"
 RETRY_CAPPED_MD = "retry_capped_batches.md"
-GLOBAL_RETRY_CAPPED_BACKLOG_CSV = DEFAULT_FINAL_DIR / "retry_capped_batches_pending.csv"
+GLOBAL_RETRY_CAPPED_BACKLOG_CSV = DEFAULT_OPS_DIR / "retry_capped_batches_pending.csv"
 PARTIAL_COMPLETE_RETRY_PENDING_STATUS = "partial_complete_retry_pending"
 WORKER_FAILED_RETRY_PENDING_STATUS = "worker_failed_retry_pending"
 SCHEMA_ERROR_QUARANTINED_STATUS = "schema_error_quarantined"
@@ -88,6 +91,31 @@ SPLIT_BATCH_FAILURE_TYPES = {
     "agent_unresponsive",
     "verifier_forced_rerun",
 }
+
+
+def resolve_default_runs_dir() -> Path:
+    try:
+        payload = json.loads(DEFAULT_LATEST_JOB_JSON.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return DEFAULT_FALLBACK_RUNS_DIR
+    runs_dir_raw = str(payload.get("runs_dir") or "").strip()
+    if not runs_dir_raw:
+        return DEFAULT_FALLBACK_RUNS_DIR
+    candidate = Path(runs_dir_raw).expanduser()
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        return DEFAULT_FALLBACK_RUNS_DIR
+    if candidate.exists() and candidate.name.startswith("token_company_parallel_eval_"):
+        return candidate
+    return DEFAULT_FALLBACK_RUNS_DIR
+
+
+DEFAULT_RUNS_DIR = resolve_default_runs_dir()
+
+
+def supervisor_lock_path(runs_dir: Path) -> Path:
+    return DEFAULT_OPS_DIR / "locks" / f"{runs_dir.name}.{DEFAULT_LOCK_FILE}"
 
 CLASSIFIER_CSV_COLUMNS = [
     "task_index",
@@ -3098,7 +3126,7 @@ def run_collect(round_index: int, *, runs_dir: Path, events_log: Path) -> bool:
         "--classifier-results-csv",
         str((DEFAULT_FINAL_DIR / "classifier_results.csv").resolve()),
         "--verification-findings-csv",
-        str((DEFAULT_FINAL_DIR / "verification_findings.csv").resolve()),
+        str((DEFAULT_OPS_DIR / "verification_findings.csv").resolve()),
         "--checkpoint-json",
         str((runs_dir / DEFAULT_COLLECT_CHECKPOINT_JSON).resolve()),
     ]
@@ -3135,7 +3163,7 @@ def main() -> None:
     state_json = resolve_runs_path(runs_dir, args.state_json, DEFAULT_STATE_JSON)
     registry_json = resolve_runs_path(runs_dir, args.registry_json, DEFAULT_REGISTRY_JSON)
     events_log = resolve_runs_path(runs_dir, args.events_log, DEFAULT_EVENTS_LOG)
-    lock_file = runs_dir / DEFAULT_LOCK_FILE
+    lock_file = supervisor_lock_path(runs_dir)
     target_rounds = list(range(args.start_round_index, args.start_round_index + args.round_count))
     set_supervisor_context(
         runs_dir=runs_dir,

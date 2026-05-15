@@ -1,0 +1,5 @@
+token_company_parallel/
+token_company_parallel_eval_*/
+token_company_parallel_eval_current/
+token_company/schema_backup_*/
+token_company_longrun_latest.json.*.bak

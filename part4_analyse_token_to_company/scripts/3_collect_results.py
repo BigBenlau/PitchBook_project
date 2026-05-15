@@ -18,8 +18,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PART4_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART4_DIR.parent
 
-DEFAULT_RUNS_DIR = PART4_DIR / "agent_runs" / "token_company_parallel"
+DEFAULT_AGENT_RUNS_DIR = PART4_DIR / "agent_runs"
+DEFAULT_LATEST_JOB_JSON = DEFAULT_AGENT_RUNS_DIR / "token_company_longrun_latest.json"
+DEFAULT_FALLBACK_RUNS_DIR = DEFAULT_AGENT_RUNS_DIR / "token_company_parallel_eval_current"
 DEFAULT_FINAL_DIR = PART4_DIR / "agent_runs" / "token_company"
+DEFAULT_OPS_DIR = PART4_DIR / "agent_runs" / "token_company_ops"
 DEFAULT_BATCH_DIR = PART4_DIR / "agent_task_batches" / "token_company"
 DEFAULT_RUNTIME_POLICY_JSON = PART4_DIR / "runtime" / "policy.json"
 AUTO_RERUN_BATCHES_CSV = "lint_rerun_batches.csv"
@@ -28,11 +31,32 @@ STARTUP_RESPAWN_BATCHES_CSV = "startup_respawn_batches.csv"
 STARTUP_RESPAWN_BATCHES_MD = "startup_respawn_batches.md"
 HEADER_ONLY_RERUN_BATCHES_CSV = "header_only_rerun_batches.csv"
 HEADER_ONLY_RERUN_BATCHES_MD = "header_only_rerun_batches.md"
-GLOBAL_RETRY_PENDING_BATCHES_CSV = DEFAULT_FINAL_DIR / "retry_pending_batches.csv"
-GLOBAL_SCHEMA_ERROR_BATCHES_CSV = DEFAULT_FINAL_DIR / "schema_error_batches.csv"
-GLOBAL_COLLECT_BLOCKED_BATCHES_CSV = DEFAULT_FINAL_DIR / "collect_blocked_batches.csv"
+GLOBAL_RETRY_PENDING_BATCHES_CSV = DEFAULT_OPS_DIR / "retry_pending_batches.csv"
+GLOBAL_SCHEMA_ERROR_BATCHES_CSV = DEFAULT_OPS_DIR / "schema_error_batches.csv"
+GLOBAL_COLLECT_BLOCKED_BATCHES_CSV = DEFAULT_OPS_DIR / "collect_blocked_batches.csv"
 DEFAULT_STARTUP_NO_ROW_TIMEOUT_SECONDS = 300
 DEFAULT_HEADER_ONLY_TIMEOUT_SECONDS = 300
+
+
+def resolve_default_runs_dir() -> Path:
+    try:
+        payload = json.loads(DEFAULT_LATEST_JOB_JSON.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return DEFAULT_FALLBACK_RUNS_DIR
+    runs_dir_raw = str(payload.get("runs_dir") or "").strip()
+    if not runs_dir_raw:
+        return DEFAULT_FALLBACK_RUNS_DIR
+    candidate = Path(runs_dir_raw).expanduser()
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        return DEFAULT_FALLBACK_RUNS_DIR
+    if candidate.exists() and candidate.name.startswith("token_company_parallel_eval_"):
+        return candidate
+    return DEFAULT_FALLBACK_RUNS_DIR
+
+
+DEFAULT_RUNS_DIR = resolve_default_runs_dir()
 
 RESULT_CSV_COLUMNS = [
     "task_index",
@@ -251,7 +275,7 @@ def parse_args() -> argparse.Namespace:
         "--verification-findings-csv",
         type=Path,
         default=None,
-        help="Merged verifier report CSV. Defaults to part4_analyse_token_to_company/agent_runs/token_company/verification_findings.csv.",
+        help="Merged verifier report CSV. Defaults to part4_analyse_token_to_company/agent_runs/token_company_ops/verification_findings.csv.",
     )
     parser.add_argument(
         "--checkpoint-json",
@@ -2685,7 +2709,7 @@ def main() -> None:
     verification_findings_csv = (
         args.verification_findings_csv.resolve()
         if args.verification_findings_csv
-        else (DEFAULT_FINAL_DIR / "verification_findings.csv").resolve()
+        else (DEFAULT_OPS_DIR / "verification_findings.csv").resolve()
     )
     checkpoint_json = (
         args.checkpoint_json.resolve()

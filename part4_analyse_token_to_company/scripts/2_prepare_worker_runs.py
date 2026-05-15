@@ -18,8 +18,31 @@ DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
 SAFE_CSV_APPEND_SCRIPT_PATH = SCRIPT_DIR / "part4_safe_csv_append.py"
 
 DEFAULT_BATCH_DIR = PART4_DIR / "agent_task_batches" / "token_company"
-DEFAULT_RUNS_DIR = PART4_DIR / "agent_runs" / "token_company_parallel"
+DEFAULT_AGENT_RUNS_DIR = PART4_DIR / "agent_runs"
+DEFAULT_LATEST_JOB_JSON = DEFAULT_AGENT_RUNS_DIR / "token_company_longrun_latest.json"
+DEFAULT_FALLBACK_RUNS_DIR = DEFAULT_AGENT_RUNS_DIR / "token_company_parallel_eval_current"
 DEFAULT_WORKERS = 5
+
+
+def resolve_default_runs_dir() -> Path:
+    try:
+        payload = json.loads(DEFAULT_LATEST_JOB_JSON.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return DEFAULT_FALLBACK_RUNS_DIR
+    runs_dir_raw = str(payload.get("runs_dir") or "").strip()
+    if not runs_dir_raw:
+        return DEFAULT_FALLBACK_RUNS_DIR
+    candidate = Path(runs_dir_raw).expanduser()
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        return DEFAULT_FALLBACK_RUNS_DIR
+    if candidate.exists() and candidate.name.startswith("token_company_parallel_eval_"):
+        return candidate
+    return DEFAULT_FALLBACK_RUNS_DIR
+
+
+DEFAULT_RUNS_DIR = resolve_default_runs_dir()
 
 RESULT_CSV_COLUMNS = [
     "task_index",

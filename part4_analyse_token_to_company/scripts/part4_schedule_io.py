@@ -9,9 +9,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PART4_DIR = SCRIPT_DIR.parent
+OPS_LOCKS_DIR = PART4_DIR / "agent_runs" / "token_company_ops" / "locks"
+
 
 def schedule_lock_path(path: Path) -> Path:
-    return path.parent / f".{path.name}.lock"
+    try:
+        relative = path.resolve().relative_to(PART4_DIR / "agent_runs")
+        lock_name = "." + str(relative).replace("/", "__") + ".lock"
+    except ValueError:
+        lock_name = f".{path.name}.lock"
+    return OPS_LOCKS_DIR / lock_name
 
 
 def load_csv_rows_with_fields(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -57,6 +66,7 @@ def normalize_rows(rows: list[dict[str, Any]], fieldnames: list[str]) -> list[di
 def locked_schedule(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = schedule_lock_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lockfile:
         fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
         try:
