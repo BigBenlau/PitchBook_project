@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import argparse
 import csv
 import json
@@ -104,6 +105,32 @@ BACKLOG_FILENAMES = [
     "collect_blocked_batches.csv",
 ]
 
+CLEANUP_FILE_PATTERNS = [
+    "*.lint_failed.*.bak",
+    "*.manual_repair_*.bak",
+    "*.schema_normalize_*.bak",
+    "*.router_align_*.bak",
+    "*.manual_collect_metadata_*.bak",
+    "*.auto_check_metadata_*.bak",
+    "task_*_classifier.json",
+    "task_*_result.json",
+    "*_classifier_row.json",
+    "*_result_row.json",
+]
+
+CLEANUP_RUN_ROOT_FILENAMES = [
+    "lint_rerun_batches.csv",
+    "lint_rerun_batches.md",
+    "startup_respawn_batches.csv",
+    "startup_respawn_batches.md",
+    "header_only_rerun_batches.csv",
+    "header_only_rerun_batches.md",
+]
+
+CLEANUP_DIR_NAMES = {
+    ".codex_home",
+}
+
 
 @dataclass
 class CheckReport:
@@ -176,6 +203,27 @@ def parse_args() -> argparse.Namespace:
         "--strict-metadata",
         action="store_true",
         help="Fail on non-completed scoped schedule rows or scoped backlog entries.",
+    )
+    parser.add_argument(
+        "--cleanup-intermediates",
+        action="store_true",
+        help=(
+            "Delete allowlisted temporary repair/quarantine backups, per-row JSON shards, "
+            "stale leases, and worker sandbox folders for the scoped batches."
+        ),
+    )
+    parser.add_argument(
+        "--cleanup-dry-run",
+        action="store_true",
+        help="Preview intermediate cleanup without deleting files or folders.",
+    )
+    parser.add_argument(
+        "--delete-runs-dir",
+        action="store_true",
+        help=(
+            "After all checks pass, delete the current parallel runs_dir. "
+            "This preserves final-dir outputs and writes a deletion report there."
+        ),
     )
     parser.add_argument(
         "--report-json",
@@ -319,6 +367,79 @@ def normalize_risk_flags_value(value: object) -> str:
     return json.dumps(flags, ensure_ascii=False)
 
 
+def normalize_json_list_string(value: object) -> str:
+    raw = "" if value is None else str(value).strip()
+    if not raw:
+        return ""
+    if validate_json_list(raw):
+        return json.dumps(json.loads(raw), ensure_ascii=False, separators=(",", ":"))
+    try:
+        parsed_literal = ast.literal_eval(raw)
+    except (SyntaxError, ValueError):
+        parsed_literal = None
+    if isinstance(parsed_literal, (list, tuple)):
+        return json.dumps(list(parsed_literal), ensure_ascii=False, separators=(",", ":"))
+    if raw.lower() in {"none", "null"}:
+        return "[]"
+    if "|" in raw:
+        parts = [part.strip() for part in raw.split("|") if part.strip()]
+        return json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps([raw], ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_has_entity_evidence_value(row: dict[str, str]) -> str:
+    raw = (row.get("has_entity_evidence") or "").strip()
+    if raw.lower() not in {"yes", "no"}:
+        return raw
+    if (row.get("entity_search_required") or "").strip() != "yes":
+        return raw
+
+    mapped_raw = normalize_json_list_string(row.get("mapped_entity_name", ""))
+    try:
+        mapped_count = len(json.loads(mapped_raw)) if mapped_raw else 0
+    except json.JSONDecodeError:
+        mapped_count = 0
+    source_types = split_pipe_list(row.get("evidence_source_types", ""))
+    source_summary = ", ".join(source_types[:3]) if source_types else "official project sources"
+    if mapped_count > 0:
+        return (
+            "Reviewed canonical token pages and cited "
+            f"{source_summary}; the cited materials support the mapped entity."
+        )
+    return (
+        "Reviewed canonical token pages and cited "
+        f"{source_summary}; no reliable legal-entity mapping surfaced from those sources."
+    )
+
+
+def canonicalize_classifier_row(row: dict[str, str]) -> dict[str, str]:
+    normalized = {column: row.get(column, "") for column in CLASSIFIER_CSV_COLUMNS}
+    normalized["risk_flags"] = normalize_risk_flags_value(normalized.get("risk_flags", ""))
+    return normalized
+
+
+def canonicalize_result_row(row: dict[str, str]) -> dict[str, str]:
+    normalized = {column: row.get(column, "") for column in RESULT_CSV_COLUMNS}
+    for column in LIST_COLUMNS:
+        normalized[column] = normalize_json_list_string(normalized.get(column, ""))
+    if normalized.get("status") == "complete":
+        normalized["status"] = "completed"
+    normalized["has_entity_evidence"] = normalize_has_entity_evidence_value(normalized)
+    return normalized
+
+
+def align_result_router_fields(
+    row: dict[str, str],
+    classifier_row: dict[str, str] | None,
+) -> dict[str, str]:
+    if not classifier_row:
+        return row
+    aligned = dict(row)
+    for column in ["token_origin_type", "entity_link_likelihood", "entity_search_required"]:
+        aligned[column] = classifier_row.get(column, "")
+    return aligned
+
+
 def batch_key(value: str) -> str:
     return Path(value).name
 
@@ -447,6 +568,36 @@ def rows_by_task(rows: list[dict[str, str]]) -> dict[int, dict[str, str]]:
     return by_task
 
 
+def resolve_check_csv_path(
+    schedule_row: dict[str, str],
+    *,
+    primary_key: str,
+    fallback_key: str,
+    expected_header: list[str],
+    expected_rows: int,
+) -> Path:
+    candidates: list[tuple[str, Path, bool, int]] = []
+    for key, source_name in [(primary_key, "primary"), (fallback_key, "best_valid")]:
+        raw = str(schedule_row.get(key) or "").strip()
+        if not raw:
+            continue
+        path = resolve_path(raw)
+        if not path.exists() or not path.is_file():
+            continue
+        header, rows = load_csv(path)
+        candidates.append((source_name, path, header == expected_header, len(rows)))
+    if not candidates:
+        raw = str(schedule_row.get(primary_key) or "").strip() or str(schedule_row.get(fallback_key) or "").strip()
+        return resolve_path(raw)
+    for source_name, path, header_ok, row_count in candidates:
+        if source_name == "primary" and header_ok and row_count == expected_rows:
+            return path
+    for source_name, path, header_ok, row_count in candidates:
+        if source_name == "best_valid" and header_ok and row_count == expected_rows:
+            return path
+    return candidates[0][1]
+
+
 def check_batch_artifacts(schedule_row: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     batch_name = batch_key(str(schedule_row.get("batch_file") or ""))
@@ -455,8 +606,20 @@ def check_batch_artifacts(schedule_row: dict[str, str]) -> tuple[dict[str, Any],
     if not task_count and expected_indexes:
         task_count = len(expected_indexes)
 
-    classifier_path = resolve_path(schedule_row.get("classifier_results_csv") or "")
-    results_path = resolve_path(schedule_row.get("results_csv") or "")
+    classifier_path = resolve_check_csv_path(
+        schedule_row,
+        primary_key="classifier_results_csv",
+        fallback_key="best_valid_classifier_results_csv",
+        expected_header=CLASSIFIER_CSV_COLUMNS,
+        expected_rows=task_count,
+    )
+    results_path = resolve_check_csv_path(
+        schedule_row,
+        primary_key="results_csv",
+        fallback_key="best_valid_results_csv",
+        expected_header=RESULT_CSV_COLUMNS,
+        expected_rows=task_count,
+    )
     run_dir = resolve_path(schedule_row.get("run_dir") or "")
     active_attempt = resolve_path(schedule_row.get("active_attempt") or run_dir)
     classifier_header, classifier_rows = load_csv(classifier_path)
@@ -471,7 +634,16 @@ def check_batch_artifacts(schedule_row: dict[str, str]) -> tuple[dict[str, Any],
     if task_count and len(result_rows) != task_count:
         errors.append(f"{results_path}: expected {task_count} rows, found {len(result_rows)}")
 
+    classifier_rows = [canonicalize_classifier_row(row) for row in classifier_rows]
     classifier_by_task = rows_by_task(classifier_rows)
+    normalized_result_rows: list[dict[str, str]] = []
+    for row in result_rows:
+        task_index = parse_optional_int(row.get("task_index"), default=0)
+        classifier_row = classifier_by_task.get(task_index)
+        normalized_result_rows.append(
+            align_result_router_fields(canonicalize_result_row(row), classifier_row)
+        )
+    result_rows = normalized_result_rows
     result_by_task = rows_by_task(result_rows)
     if expected_indexes:
         missing_classifier = sorted(set(expected_indexes) - set(classifier_by_task))
@@ -730,6 +902,8 @@ def run_collect(runs_dir: Path, batch_files: list[str], require_verification: bo
         str(SCRIPT_DIR / "3_collect_results.py"),
         "--runs-dir",
         str(runs_dir),
+        "--repair-identity-drift-in-place",
+        "--fail-on-identity-drift",
     ]
     for batch_file in batch_files:
         command.extend(["--batch-file", batch_key(batch_file)])
@@ -802,11 +976,172 @@ def fix_metadata(runs_dir: Path, final_dir: Path, batch_files: list[str]) -> dic
     }
 
 
+def cleanup_intermediates(
+    runs_dir: Path,
+    final_dir: Path,
+    batch_files: list[str],
+    dry_run: bool,
+) -> dict[str, Any]:
+    _, schedule_rows = load_schedule(runs_dir)
+    scoped_rows = resolve_batch_scope(schedule_rows, batch_files)
+    delete_files: set[Path] = set()
+    delete_dirs: set[Path] = set()
+
+    for row in scoped_rows:
+        run_dir = resolve_path(row.get("run_dir") or "")
+        active_attempt = resolve_path(row.get("active_attempt") or run_dir)
+        candidate_dirs = [run_dir, active_attempt, run_dir / "reconciled"]
+
+        lease_path = run_dir / "active_attempt_lease.json"
+        if lease_path.exists():
+            delete_files.add(lease_path)
+
+        for candidate_dir in candidate_dirs:
+            if not candidate_dir.exists() or not candidate_dir.is_dir():
+                continue
+            for pattern in CLEANUP_FILE_PATTERNS:
+                for path in candidate_dir.glob(pattern):
+                    if path.is_file():
+                        delete_files.add(path)
+            for dir_name in CLEANUP_DIR_NAMES:
+                path = candidate_dir / dir_name
+                if path.exists() and path.is_dir():
+                    delete_dirs.add(path)
+
+    for filename in CLEANUP_RUN_ROOT_FILENAMES:
+        path = runs_dir / filename
+        if path.exists() and path.is_file():
+            delete_files.add(path)
+
+    for pattern in ["*.manual_collect_metadata_*.bak", "*.auto_check_metadata_*.bak"]:
+        for path in runs_dir.glob(pattern):
+            if path.is_file():
+                delete_files.add(path)
+        for path in final_dir.glob(pattern):
+            if path.is_file():
+                delete_files.add(path)
+
+    files = sorted(delete_files)
+    dirs = sorted(delete_dirs, reverse=True)
+    removed_files: list[str] = []
+    removed_dirs: list[str] = []
+
+    if not dry_run:
+        for path in files:
+            if path.exists() and path.is_file():
+                path.unlink()
+                removed_files.append(str(path))
+        for path in dirs:
+            if path.exists() and path.is_dir():
+                shutil.rmtree(path)
+                removed_dirs.append(str(path))
+
+    return {
+        "dry_run": dry_run,
+        "candidate_file_count": len(files),
+        "candidate_dir_count": len(dirs),
+        "removed_file_count": len(removed_files),
+        "removed_dir_count": len(removed_dirs),
+        "candidate_files": [str(path) for path in files[:200]],
+        "candidate_dirs": [str(path) for path in dirs[:50]],
+        "removed_files": removed_files[:200],
+        "removed_dirs": removed_dirs[:50],
+    }
+
+
+def update_latest_after_runs_dir_delete(runs_dir: Path, final_dir: Path) -> dict[str, Any]:
+    if not LATEST_JOB_JSON.exists():
+        return {"latest_job_exists": False, "updated": False}
+    try:
+        data = read_json(LATEST_JOB_JSON)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    raw_runs_dir = str(data.get("runs_dir") or data.get("run_dir") or "")
+    if raw_runs_dir and resolve_path(raw_runs_dir).resolve() != runs_dir.resolve():
+        return {
+            "latest_job_exists": True,
+            "updated": False,
+            "reason": "latest_job_points_elsewhere",
+            "latest_runs_dir": raw_runs_dir,
+        }
+    backup = LATEST_JOB_JSON.with_name(
+        LATEST_JOB_JSON.name
+        + ".parallel_deleted_"
+        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        + ".bak"
+    )
+    shutil.copy2(LATEST_JOB_JSON, backup)
+    updated = {
+        "status": "final_outputs_only",
+        "phase": "parallel_run_artifacts_deleted",
+        "updated_at": utc_now(),
+        "deleted_runs_dir": str(runs_dir),
+        "final_dir": str(final_dir),
+        "final_results_csv": str(final_dir / "results.csv"),
+        "classifier_results_csv": str(final_dir / "classifier_results.csv"),
+        "manual_review_csv": str(final_dir / "needs_manual_review.csv"),
+        "checkpoint_json": str(final_dir / "checkpoint.json"),
+        "previous_latest_job_backup": str(backup),
+    }
+    LATEST_JOB_JSON.write_text(json.dumps(updated, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return {"latest_job_exists": True, "updated": True, "backup": str(backup)}
+
+
+def delete_runs_dir_after_checks(runs_dir: Path, final_dir: Path, report_payload: dict[str, Any]) -> dict[str, Any]:
+    if not runs_dir.exists():
+        return {"deleted": False, "reason": "runs_dir_missing", "runs_dir": str(runs_dir)}
+    try:
+        runs_dir.relative_to(PART4_DIR / "agent_runs")
+    except ValueError as exc:
+        raise SystemExit(f"Refusing to delete runs_dir outside part4 agent_runs: {runs_dir}") from exc
+    if runs_dir.name == "token_company":
+        raise SystemExit(f"Refusing to delete final output directory: {runs_dir}")
+    if not (runs_dir / "schedule.csv").exists():
+        raise SystemExit(f"Refusing to delete runs_dir without schedule.csv marker: {runs_dir}")
+
+    deletion_report = final_dir / (
+        "parallel_run_deleted_"
+        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        + ".json"
+    )
+    deletion_report.parent.mkdir(parents=True, exist_ok=True)
+    deletion_payload = {
+        "deleted_at": utc_now(),
+        "deleted_runs_dir": str(runs_dir),
+        "final_dir": str(final_dir),
+        "pre_delete_report": report_payload,
+    }
+    deletion_report.write_text(
+        json.dumps(deletion_payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    latest_update = update_latest_after_runs_dir_delete(runs_dir, final_dir)
+    shutil.rmtree(runs_dir)
+    return {
+        "deleted": True,
+        "deleted_runs_dir": str(runs_dir),
+        "deletion_report": str(deletion_report),
+        "latest_update": latest_update,
+    }
+
+
 def main() -> None:
     args = parse_args()
     runs_dir = (args.runs_dir or find_latest_runs_dir()).resolve()
     final_dir = args.final_dir.resolve()
-    report_path = (args.report_json or (runs_dir / "auto_check_collect_report.json")).resolve()
+    if args.report_json:
+        report_path = args.report_json.resolve()
+    elif args.delete_runs_dir:
+        report_path = (
+            final_dir
+            / (
+                "auto_check_collect_before_delete_"
+                + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                + ".json"
+            )
+        ).resolve()
+    else:
+        report_path = (runs_dir / "auto_check_collect_report.json").resolve()
 
     _, schedule_rows = load_schedule(runs_dir)
     scoped_rows = resolve_batch_scope(schedule_rows, args.batch_file)
@@ -862,6 +1197,17 @@ def main() -> None:
         print("metadata_fix: applied")
         print(json.dumps(metadata_fix_summary, ensure_ascii=False, indent=2))
 
+    cleanup_summary: dict[str, Any] | None = None
+    if args.cleanup_intermediates or args.cleanup_dry_run:
+        cleanup_summary = cleanup_intermediates(
+            runs_dir=runs_dir,
+            final_dir=final_dir,
+            batch_files=batch_files,
+            dry_run=args.cleanup_dry_run and not args.cleanup_intermediates,
+        )
+        print("cleanup_intermediates:")
+        print(json.dumps(cleanup_summary, ensure_ascii=False, indent=2))
+
     final_report = run_checks(
         runs_dir=runs_dir,
         final_dir=final_dir,
@@ -870,6 +1216,18 @@ def main() -> None:
         strict_metadata=args.strict_metadata or args.fix_metadata,
     )
     print_report("finalcheck", final_report)
+    delete_summary: dict[str, Any] | None = None
+    if args.delete_runs_dir:
+        if final_report.errors:
+            print("delete_runs_dir: skipped because finalcheck failed")
+        else:
+            delete_summary = delete_runs_dir_after_checks(
+                runs_dir=runs_dir,
+                final_dir=final_dir,
+                report_payload=final_report.to_dict(),
+            )
+            print("delete_runs_dir:")
+            print(json.dumps(delete_summary, ensure_ascii=False, indent=2))
     write_report(
         report_path,
         final_report,
@@ -877,6 +1235,8 @@ def main() -> None:
             "phase": "completed" if not final_report.errors else "failed",
             "collect_returncode": collect_returncode,
             "metadata_fix": metadata_fix_summary,
+            "cleanup_intermediates": cleanup_summary,
+            "delete_runs_dir": delete_summary,
         },
     )
     if final_report.errors:

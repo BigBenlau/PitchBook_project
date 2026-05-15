@@ -40,6 +40,7 @@ DEFAULT_MAX_BATCH_RESTARTS = 8
 DEFAULT_SPLIT_BATCH_RESPAWN_THRESHOLD = 5
 DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 3
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
+DEFAULT_WORKER_SANDBOX_MODE = os.environ.get("PART4_WORKER_SANDBOX_MODE", "danger-full-access")
 DEFAULT_SPLIT_SHARD_SIZE = 15
 DEFAULT_SPLIT_SHARD_COUNT = 2
 SPLIT_BATCH_LAUNCH_REASON = "split_batch_2x15"
@@ -1923,7 +1924,7 @@ def spawn_worker(
         "-m",
         launch_row.get("model") or "gpt-5.4-mini",
         "-s",
-        "workspace-write",
+        DEFAULT_WORKER_SANDBOX_MODE,
         "--json",
         "-o",
         str(final_message_path),

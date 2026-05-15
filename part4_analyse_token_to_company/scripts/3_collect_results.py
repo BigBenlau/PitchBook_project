@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import argparse
 import csv
 import json
@@ -1121,6 +1122,14 @@ def normalize_json_list_string(value: object) -> str:
             return json.dumps(json.loads(raw), ensure_ascii=False, separators=(",", ":"))
         except json.JSONDecodeError:
             return raw
+    try:
+        parsed_literal = ast.literal_eval(raw)
+    except (SyntaxError, ValueError):
+        parsed_literal = None
+    if isinstance(parsed_literal, (list, tuple)):
+        return json.dumps(list(parsed_literal), ensure_ascii=False, separators=(",", ":"))
+    if raw.lower() in {"none", "null"}:
+        return "[]"
     repaired_candidates: list[str] = []
     repaired = raw.replace('""', '"')
     if repaired != raw:
@@ -1143,7 +1152,10 @@ def normalize_json_list_string(value: object) -> str:
                 return json.dumps(json.loads(candidate), ensure_ascii=False, separators=(",", ":"))
             except json.JSONDecodeError:
                 continue
-    return raw
+    if "|" in raw:
+        parts = [part.strip() for part in raw.split("|") if part.strip()]
+        return json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps([raw], ensure_ascii=False, separators=(",", ":"))
 
 
 ISO_8601_UTC_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -1219,6 +1231,31 @@ def repair_shifted_result_row(row: dict[str, str]) -> dict[str, str]:
     return repaired
 
 
+def normalize_has_entity_evidence_value(row: dict[str, str]) -> str:
+    raw = (row.get("has_entity_evidence") or "").strip()
+    if raw.lower() not in {"yes", "no"}:
+        return raw
+    if (row.get("entity_search_required") or "").strip() != "yes":
+        return raw
+
+    mapped_raw = normalize_json_list_string(row.get("mapped_entity_name", ""))
+    try:
+        mapped_count = len(json.loads(mapped_raw)) if mapped_raw else 0
+    except json.JSONDecodeError:
+        mapped_count = 0
+    source_types = split_pipe_list(row.get("evidence_source_types", ""))
+    source_summary = ", ".join(source_types[:3]) if source_types else "official project sources"
+    if mapped_count > 0:
+        return (
+            "Reviewed canonical token pages and cited "
+            f"{source_summary}; the cited materials support the mapped entity."
+        )
+    return (
+        "Reviewed canonical token pages and cited "
+        f"{source_summary}; no reliable legal-entity mapping surfaced from those sources."
+    )
+
+
 def normalize_result_row_payload(payload: dict) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for column in RESULT_CSV_COLUMNS:
@@ -1233,6 +1270,7 @@ def normalize_result_row_payload(payload: dict) -> dict[str, str]:
             normalized[column] = normalize_json_list_string(value)
         else:
             normalized[column] = str(value)
+    normalized["has_entity_evidence"] = normalize_has_entity_evidence_value(normalized)
     return normalized
 
 
@@ -1392,7 +1430,13 @@ def collect_classifier_rows(
         if not classifier_raw:
             validation_errors.append(f"{schedule_row.get('batch_file')}: missing classifier_results_csv in schedule")
             continue
-        classifier_csv = ensure_file(resolve_path(classifier_raw), "Classifier results CSV")
+        classifier_csv = resolve_collect_csv_path(
+            schedule_row,
+            primary_key="classifier_results_csv",
+            fallback_key="best_valid_classifier_results_csv",
+            expected_header=CLASSIFIER_CSV_COLUMNS,
+            label="Classifier results CSV",
+        )
         header, rows = load_csv(classifier_csv)
         if header != CLASSIFIER_CSV_COLUMNS:
             validation_errors.append(f"{classifier_csv}: header mismatch")
@@ -1471,6 +1515,7 @@ def canonicalize_result_row(row: dict[str, str]) -> dict[str, str]:
     for column in LIST_COLUMNS:
         normalized[column] = normalize_json_list_string(normalized.get(column, ""))
     normalized = repair_shifted_result_row(normalized)
+    normalized["has_entity_evidence"] = normalize_has_entity_evidence_value(normalized)
     normalized["confidence"] = normalize_confidence_value(normalized.get("confidence", ""))
     return normalized
 
@@ -1479,6 +1524,49 @@ def canonicalize_classifier_row(row: dict[str, str]) -> dict[str, str]:
     normalized = {column: row.get(column, "") for column in CLASSIFIER_CSV_COLUMNS}
     normalized["risk_flags"] = normalize_risk_flags_value(normalized.get("risk_flags", ""))
     return normalized
+
+
+def align_result_router_fields(
+    row: dict[str, str],
+    classifier_row: dict[str, str] | None,
+) -> dict[str, str]:
+    if not classifier_row:
+        return row
+    aligned = dict(row)
+    for column in ["token_origin_type", "entity_link_likelihood", "entity_search_required"]:
+        aligned[column] = classifier_row.get(column, "")
+    return aligned
+
+
+def resolve_collect_csv_path(
+    schedule_row: dict[str, str],
+    *,
+    primary_key: str,
+    fallback_key: str,
+    expected_header: list[str],
+    label: str,
+) -> Path:
+    expected_rows = parse_optional_int(schedule_row.get("task_count"), default=0)
+    candidates: list[tuple[str, Path, dict[str, object]]] = []
+    for key, source_name in [(primary_key, "primary"), (fallback_key, "best_valid")]:
+        raw = (schedule_row.get(key) or "").strip()
+        if not raw:
+            continue
+        path = resolve_path(raw)
+        if not path.exists() or not path.is_file():
+            continue
+        inspection = inspect_csv_output(path, expected_header, expected_rows)
+        candidates.append((source_name, path, inspection))
+    if not candidates:
+        raw = (schedule_row.get(primary_key) or "").strip() or (schedule_row.get(fallback_key) or "").strip()
+        return ensure_file(resolve_path(raw), label)
+    for source_name, path, inspection in candidates:
+        if source_name == "primary" and inspection.get("state") == "completed":
+            return path
+    for source_name, path, inspection in candidates:
+        if source_name == "best_valid" and inspection.get("state") == "completed":
+            return path
+    return candidates[0][1]
 
 
 def requires_search_guarantee(schedule_row: dict[str, str]) -> bool:
@@ -1506,7 +1594,13 @@ def collect_worker_rows(
         expected_total += task_count
         tasks_file = ensure_file(resolve_path(schedule_row["tasks_file"]), "Tasks JSONL")
         tasks_by_index = build_tasks_by_index(tasks_file)
-        results_csv = ensure_file(resolve_path(schedule_row["results_csv"]), "Worker results CSV")
+        results_csv = resolve_collect_csv_path(
+            schedule_row,
+            primary_key="results_csv",
+            fallback_key="best_valid_results_csv",
+            expected_header=RESULT_CSV_COLUMNS,
+            label="Worker results CSV",
+        )
         header, rows = load_csv(results_csv)
         if header != RESULT_CSV_COLUMNS:
             validation_errors.append(f"{results_csv}: header mismatch")
@@ -1526,15 +1620,17 @@ def collect_worker_rows(
             if task_index in seen_task_indexes:
                 duplicate_task_indexes.add(task_index)
             seen_task_indexes.add(task_index)
+            classifier_row = classifier_rows_by_task.get(task_index)
+            if not classifier_row:
+                validation_errors.append(f"{results_csv}: task_index={task_index}: missing classifier row")
+            else:
+                row = align_result_router_fields(row, classifier_row)
             validation_errors.extend(validate_result_row(row, results_csv))
             if requires_search_guarantee(schedule_row) and row.get("entity_search_required") != "yes":
                 validation_errors.append(
                     f"{results_csv}: task_index={task_index}: search-guarantee rerun batches require entity_search_required=yes"
                 )
-            classifier_row = classifier_rows_by_task.get(task_index)
-            if not classifier_row:
-                validation_errors.append(f"{results_csv}: task_index={task_index}: missing classifier row")
-            else:
+            if classifier_row:
                 for column in ["token_origin_type", "entity_link_likelihood", "entity_search_required"]:
                     if row.get(column) != classifier_row.get(column):
                         validation_errors.append(

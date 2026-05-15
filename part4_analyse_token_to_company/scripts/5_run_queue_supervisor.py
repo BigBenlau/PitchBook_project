@@ -5,6 +5,7 @@ import argparse
 import csv
 import importlib.util
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -39,6 +40,8 @@ RUNNING_PHASES = {
     "tail_retry_pending",
 }
 DEFAULT_MAX_TAIL_RETRIES = 1
+DEFAULT_MAX_SCHEMA_ERROR_SUPERVISOR_RETRIES = 1
+SCHEMA_ERROR_SUPERVISOR_RETRY_KEY = "schema_error_supervisor_retry"
 TAIL_RETRY_PENDING_VALUE = "yes"
 
 
@@ -134,6 +137,10 @@ def parse_slot_id(value: Any) -> int:
 
 def parse_tail_retry_count(value: Any) -> int:
     return max(0, ROUND.parse_int(value, 0))
+
+
+def parse_failure_counts_json(value: Any) -> dict[str, int]:
+    return ROUND.parse_failure_counts(str(value or ""))
 
 
 def row_tail_retry_pending(row: dict[str, str]) -> bool:
@@ -887,6 +894,35 @@ def run_collect_for_batches(
     return completed.returncode == 0
 
 
+def run_auto_check_collect_for_batches(
+    batch_files: list[str],
+    *,
+    runs_dir: Path,
+    events_log: Path,
+    require_verification: bool = True,
+) -> bool:
+    cmd = [
+        sys.executable,
+        str(SCRIPT_DIR / "8_auto_check_collect.py"),
+        "--runs-dir",
+        str(runs_dir),
+        "--collect",
+        "--fix-metadata",
+        "--strict-metadata",
+    ]
+    if require_verification:
+        cmd.append("--require-verification")
+    for batch_file in batch_files:
+        cmd.extend(["--batch-file", batch_file])
+    completed = ROUND.run_command(
+        cmd,
+        cwd=ROUND.REPO_ROOT,
+        events_log=events_log,
+        label="auto_check_collect_batches",
+    )
+    return completed.returncode == 0
+
+
 def reset_csv_to_header(path: Path, fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -1140,6 +1176,73 @@ def mark_batches_verifier_rerun(
         return row
 
     return apply_batch_row_updates(schedule_rows, batch_files=batch_files, update_fn=_update)
+
+
+def mark_batches_schema_error_retry_requested(
+    schedule_rows: list[dict[str, str]],
+    *,
+    batch_files: list[str],
+    reason: str,
+) -> list[dict[str, str]]:
+    now_iso = ROUND.iso_now()
+
+    def _update(row: dict[str, str]) -> dict[str, str]:
+        if effective_status(row) != ROUND.SCHEMA_ERROR_QUARANTINED_STATUS:
+            return row
+        counts = parse_failure_counts_json(row.get("failure_counts_json", ""))
+        retry_count = max(0, counts.get(SCHEMA_ERROR_SUPERVISOR_RETRY_KEY, 0))
+        if retry_count >= DEFAULT_MAX_SCHEMA_ERROR_SUPERVISOR_RETRIES:
+            return row
+        counts[SCHEMA_ERROR_SUPERVISOR_RETRY_KEY] = retry_count + 1
+        counts["schema_error"] = max(0, counts.get("schema_error", 0)) + 1
+        row["failure_counts_json"] = json.dumps(counts, ensure_ascii=False, separators=(",", ":"))
+        row["status"] = "needs_rerun"
+        row["completion_mode"] = ""
+        row["queue_state"] = "queued"
+        row["collect_state"] = "pending"
+        row["collect_failure_reason"] = ""
+        row["prepared_mode"] = "fresh_restart"
+        row["prepared_reason"] = reason
+        row["last_failure_type"] = "schema_error"
+        row["last_rerun_reason"] = reason
+        row["last_rerun_at"] = now_iso
+        row["tail_retry_pending"] = ""
+        row["slot_id"] = ""
+        row["health_state"] = "needs_rerun"
+        row["ready_to_collect_at"] = ""
+        row["collected_at"] = ""
+        row["soft_timeout_warned_at"] = ""
+        row["last_timeout_warning_reason"] = ""
+        row["next_eligible_retry_at"] = ""
+        return row
+
+    return apply_batch_row_updates(schedule_rows, batch_files=batch_files, update_fn=_update)
+
+
+def promote_schema_error_retry_rows(
+    schedule_rows: list[dict[str, str]],
+    *,
+    target_rounds: list[int],
+) -> tuple[list[dict[str, str]], list[str]]:
+    batch_files: list[str] = []
+    for row in target_scope_rows(schedule_rows, target_rounds):
+        if effective_status(row) != ROUND.SCHEMA_ERROR_QUARANTINED_STATUS:
+            continue
+        counts = parse_failure_counts_json(row.get("failure_counts_json", ""))
+        if max(0, counts.get(SCHEMA_ERROR_SUPERVISOR_RETRY_KEY, 0)) >= DEFAULT_MAX_SCHEMA_ERROR_SUPERVISOR_RETRIES:
+            continue
+        batch_file = str(row.get("batch_file") or "").strip()
+        if batch_file:
+            batch_files.append(batch_file)
+    batch_files = sorted(set(batch_files))
+    if not batch_files:
+        return schedule_rows, []
+    updated_rows = mark_batches_schema_error_retry_requested(
+        schedule_rows,
+        batch_files=batch_files,
+        reason="schema_error_supervisor_retry",
+    )
+    return updated_rows, batch_files
 
 
 def tail_retry_launch_allowed(schedule_rows: list[dict[str, str]], target_rounds: list[int]) -> bool:
@@ -1626,6 +1729,27 @@ def main() -> None:
             )
             phase = "tail_retry_pending" if parked_tail_retry_any else "deferred_long_tail"
 
+        schedule_rows, schema_retry_batches = promote_schema_error_retry_rows(
+            schedule_rows,
+            target_rounds=target_rounds,
+        )
+        if schema_retry_batches:
+            save_schedule(schedule_csv, fieldnames, schedule_rows)
+            write_global_backlog_exports(schedule_rows)
+            for batch_file in schema_retry_batches:
+                ROUND.log_event(
+                    events_log,
+                    f"[queue:schema_error_retry_scheduled] batch={batch_file} retry_key={SCHEMA_ERROR_SUPERVISOR_RETRY_KEY}",
+                )
+            schedule_rows = refresh_schedule(
+                schedule_csv,
+                fieldnames=fieldnames,
+                state_hint=ROUND.load_json_dict(state_json),
+                registry=registry,
+                max_workers=args.max_workers,
+            )
+            phase = "watch"
+
         if not args.disable_split_batch_recovery:
             split_requested = False
             for round_index in target_rounds:
@@ -1803,6 +1927,26 @@ def main() -> None:
                 max_workers=args.max_workers,
             )
             if not lint_ok:
+                ROUND.log_event(events_log, f"[queue:collect_lint_failed] batch={batch_file} stage=lint")
+                auto_recover_ok = run_auto_check_collect_for_batches(
+                    [batch_file],
+                    runs_dir=runs_dir,
+                    events_log=events_log,
+                    require_verification=not collect_skip_verification,
+                )
+                registry = ROUND.cleanup_registry(ROUND.load_registry(registry_json))
+                ROUND.save_registry(registry_json, registry)
+                schedule_rows = refresh_schedule(
+                    schedule_csv,
+                    fieldnames=fieldnames,
+                    state_hint=ROUND.load_json_dict(state_json),
+                    registry=registry,
+                    max_workers=args.max_workers,
+                )
+                if auto_recover_ok:
+                    write_global_backlog_exports(schedule_rows)
+                    ROUND.log_event(events_log, f"[queue:collect_lint_auto_recovered] batch={batch_file}")
+                    continue
                 quarantine_attempt_outputs(collect_row, reason="lint_failed", events_log=events_log)
                 schedule_rows = mark_batches_collect_failed(
                     schedule_rows,
@@ -1811,7 +1955,7 @@ def main() -> None:
                 )
                 save_schedule(schedule_csv, fieldnames, schedule_rows)
                 write_global_backlog_exports(schedule_rows)
-                ROUND.log_event(events_log, f"[queue:collect_lint_failed] batch={batch_file}")
+                ROUND.log_event(events_log, f"[queue:collect_lint_quarantined] batch={batch_file}")
                 continue
 
             collect_ok = run_collect_for_batches(
