@@ -1,0 +1,22 @@
+{
+  "updated_at": "2026-05-13T15:23:52.842757+00:00",
+  "schema_version": "v2",
+  "completed_rows_in_final_results": 2,
+  "completed_through_task_index": 2,
+  "completed_through_batch": 1,
+  "max_collected_batch_seen": 1,
+  "window_start_batch": 1,
+  "contiguous_completed_through_batch": 1,
+  "next_missing_batch": 2,
+  "pending_batch_count": 0,
+  "next_batch_to_process": 2,
+  "next_task_index_to_process": 3,
+  "batch_size": 30,
+  "workers": 5,
+  "total_batches": 1,
+  "classifier_results_csv": "/Users/benlao/Downloads/STANFORD_20260201/part6_analyse_investor_capabilities/agent_runs/crypto_investor/classifier_results.csv",
+  "final_results_csv": "/Users/benlao/Downloads/STANFORD_20260201/part6_analyse_investor_capabilities/agent_runs/crypto_investor/results.csv",
+  "manual_review_csv": "/Users/benlao/Downloads/STANFORD_20260201/part6_analyse_investor_capabilities/agent_runs/crypto_investor/needs_manual_review.csv",
+  "verification_findings_csv": "/Users/benlao/Downloads/STANFORD_20260201/part6_analyse_investor_capabilities/agent_runs/crypto_investor/verification_findings.csv",
+  "status": "ready_for_batch_0002"
+}
