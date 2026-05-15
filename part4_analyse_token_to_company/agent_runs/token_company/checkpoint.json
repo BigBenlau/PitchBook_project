@@ -1,0 +1,22 @@
+{
+  "updated_at": "2026-05-15T13:31:53.144504+00:00",
+  "schema_version": "v2",
+  "completed_rows_in_final_results": 450,
+  "completed_through_task_index": 450,
+  "completed_through_batch": 15,
+  "max_collected_batch_seen": 15,
+  "window_start_batch": 11,
+  "contiguous_completed_through_batch": 15,
+  "next_missing_batch": 16,
+  "pending_batch_count": 0,
+  "next_batch_to_process": 16,
+  "next_task_index_to_process": 451,
+  "batch_size": 30,
+  "workers": 5,
+  "total_batches": 671,
+  "classifier_results_csv": "/home/benl66/PitchBook_project/part4_analyse_token_to_company/agent_runs/token_company/classifier_results.csv",
+  "final_results_csv": "/home/benl66/PitchBook_project/part4_analyse_token_to_company/agent_runs/token_company/results.csv",
+  "manual_review_csv": "/home/benl66/PitchBook_project/part4_analyse_token_to_company/agent_runs/token_company/needs_manual_review.csv",
+  "verification_findings_csv": "/home/benl66/PitchBook_project/part4_analyse_token_to_company/agent_runs/token_company/verification_findings.csv",
+  "status": "ready_for_batch_0016"
+}
