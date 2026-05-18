@@ -37,9 +37,11 @@
 11. 若 `from_cmc = 1` 或 `cmc_url` 存在，必須直接訪問 `cmc_url`
 12. 若同時屬於 CG 與 CMC，2 個頁面都必須訪問
 13. 所有 entity / project 類欄位都用 JSON list string
-14. 只有 issuer / operator / steward / legal counterparty 類主體才可映射為 entity
-15. 不可把僅僅提到 token 的 advocacy group、社群組織、歷史基金會自動記為 mapped entity
-16. 有衝突或 unresolved ambiguity 時才設 `needs_manual_review = yes`
+14. 只有具 direct responsibility 的 issuer / operator / steward / foundation / association / trust / legal counterparty 類主體才可映射為 entity
+15. 若多個 entity 都各自有 strong + direct + stable evidence，必須在同一 token row 裡並列全部保留，不可收斂成單一 "best entity"
+16. foundation + operating company、issuer + operator、association + legal wrapper 都是合法並列模式
+17. 不可把僅僅提到 token 的 advocacy group、社群組織、歷史基金會自動記為 mapped entity
+18. 多實體本身不是 manual review 理由；只有 inclusion / exclusion 仍 unresolved 時才設 `needs_manual_review = yes`
 
 ## Classifier Header
 
@@ -87,7 +89,8 @@ Allowed `search_tier`：
 - 確認 token identity
 - 確認 project identity
 - 確認 issuer / foundation / operator / legal entity
-- 只在 evidence 可支持其為 responsible entity 時才記錄
+- 對每個候選 entity 分別判斷是否有 strong + direct + stable responsibility evidence
+- 若多個 entity 都成立，全部保留；不要只選 foundation 或只選 company
 - 優先官方 sources，但可用可靠 secondary sources 做 corroboration
 
 `light` search：
@@ -162,10 +165,13 @@ task_index,canonical_slug,token_symbol,token_name,classifier_search_tier,worker_
 Verifier 必須重點檢查：
 
 - worker 是否漏掉 entity
+- worker 是否把合法 multi-entity mapping 錯誤收斂成單一 foundation / 單一 company
 - worker 是否多報 entity
 - project mapping 是否錯
 - entity mapping 是否錯
 - `skip_candidate` 是否太保守
+
+Verifier 的 `suspected_missing_company` 應理解為「漏掉應保留的 responsible entity」，不論該實體是 company、foundation、issuer、association、trust 或 legal wrapper。
 
 ## Runtime Rules
 

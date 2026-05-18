@@ -1219,6 +1219,7 @@ def render_worker_base_instructions(row: dict[str, str], tasks: list[dict[str, A
             "- Every token in this batch must receive at least `light` search, so `entity_search_required` must be `yes` for every token.\n"
             "- A no-entity conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
             "- Do not close a row as no-entity only from token-type heuristics; perform the bounded or full search first, then conclude `mapped_entity_name = []` if appropriate.\n"
+            "- If multiple entities each have strong, direct, and stable responsibility evidence, keep the full multi-entity mapping instead of collapsing to a single steward or company.\n"
         )
     return rendered
 

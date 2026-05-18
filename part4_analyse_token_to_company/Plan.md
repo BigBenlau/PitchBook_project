@@ -189,6 +189,10 @@ The worker must not infer entity linkage only from token aggregators if the link
 Entity capture rules:
 
 - Record an entity only when stable evidence shows it is an issuer, operator, steward, legal counterparty, or other directly responsible entity for the token or project.
+- If multiple entities each have strong, direct, and stable responsibility evidence, keep all of them in the same token row instead of collapsing to a single "best" entity.
+- Foundation + operating company is a legitimate and common parallel pattern when both are directly supported by official evidence.
+- Issuer + operator, association + legal wrapper, or foundation + company are all valid multi-entity combinations when each entity independently clears the same evidence bar.
+- Do not drop an operating company only because a foundation looks more official, and do not drop a foundation only because a company looks more operational.
 - Valid entity types include companies, foundations, associations, trusts, DAO legal wrappers, nonprofits, government-linked issuers, and other legal entities.
 - Do not map generic advocacy groups, meetup/community organizations, historical marketing foundations, grant programs, or unrelated nonprofits merely because they mention the token.
 - A decentralized network may still resolve to no mapped entity when there is no canonical issuer, operator, steward, or legal counterparty.
@@ -273,11 +277,14 @@ Set `needs_manual_review = yes` only when ambiguity remains after a real resolut
 
 Typical triggers:
 
-- multiple plausible entities
-- unclear foundation vs operating company split
 - wrapper/bridge token with ambiguous issuer
 - token migration / rebrand / acquisition ambiguity
 - conflicting primary and secondary evidence
+- uncertainty about whether a candidate entity actually has direct responsibility, after best-effort official-source review
+
+Do not use manual review just because multiple entities qualify.
+
+If the evidence clearly supports more than one direct-responsibility entity, keep the multi-entity mapping and leave `needs_manual_review = no`.
 
 Do not use manual review as a substitute for missing search work.
 
@@ -310,6 +317,13 @@ Allowed recommended actions:
 - `rerun_company`
 - `rerun_batch`
 - `update_prompt_or_process`
+
+Verifier requirements:
+
+- treat `suspected_missing_company` as "suspected missing responsible entity" even when the missing entity is a foundation, operator, issuer, association, trust, or other allowed legal wrapper
+- flag rows where the worker incorrectly collapsed a valid multi-entity mapping into a single foundation or a single company
+- treat omission of a clearly supported parallel entity as a defect even if the kept entity is itself valid
+- do not mark a row for manual review merely because it contains multiple mapped entities when those entities are each directly supported
 
 ## 10. Checkpoint and Resume Contract
 

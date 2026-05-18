@@ -424,6 +424,7 @@ def render_worker_base_instructions(
             "- Every token in this batch must receive at least `light` search, so `entity_search_required` must be `yes` for every token.\n"
             "- A no-entity conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
             "- Do not close a row as no-entity only from token-type heuristics; perform the bounded or full search first, then conclude `mapped_entity_name = []` if appropriate.\n"
+            "- If more than one responsible entity clears the evidence bar, preserve the multi-entity mapping instead of collapsing to a single steward or company.\n"
         )
     return rendered
 
@@ -489,11 +490,14 @@ Task:
 - Check whether `search_tier` was too conservative for the row.
 - Check whether any `skip_candidate` decision was unreasonable or should have been routed to `light` or `full`.
 - Detect missing entities.
+- Detect when a worker wrongly collapsed a supported multi-entity mapping into a single foundation or a single company.
 - Detect extra or unrelated entities.
 - Detect wrong token-to-project mapping.
 - Detect wrong project-to-entity mapping.
 - Detect `entity_search_required = no` rows that should have been searched.
-- Focus on token rows with entity mappings, skipped-search rows, ambiguous issuer/foundation/operator splits, and low/medium confidence rows.
+- Treat `suspected_missing_company` as "suspected missing responsible entity" even when the missing entity is a foundation, issuer, operator, association, trust, or legal wrapper.
+- Multi-entity output is valid when each entity independently has strong, direct, and stable responsibility evidence; do not mark a row wrong merely because it includes both a foundation and an operating company.
+- Focus on token rows with entity mappings, skipped-search rows, ambiguous issuer/foundation/operator splits, possible multi-entity collapses, and low/medium confidence rows.
 - If you detect a systematic issue pattern, report it explicitly for the main agent using one of these cause labels when applicable: `classification`, `search`, `evidence_interpretation`, `csv_formatting`, `prompt_ambiguity`, `run_harness`, `other`.
 
 Search policy:

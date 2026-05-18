@@ -717,6 +717,10 @@ def derive_job_status(
     if state is None:
         if latest_job is None:
             return "missing", "No latest job metadata and no supervisor_state.json were found."
+        latest_status = str((latest_job or {}).get("status") or "").strip().lower()
+        latest_runs_dir = str((latest_job or {}).get("runs_dir") or "").strip()
+        if latest_status == "completed" and not latest_runs_dir:
+            return "no_active_longrun", "Latest job metadata reports completed and no current run workspace is recorded."
         return "launched_no_state", "Latest job exists, but supervisor_state.json is missing."
 
     phase = str(state.get("phase") or "").strip().lower()
@@ -802,8 +806,9 @@ def derive_job_status(
 def build_payload(args: argparse.Namespace) -> dict[str, object]:
     latest_job = load_json(args.latest_job_json.resolve())
     runs_dir: Path | None = args.runs_dir.resolve() if args.runs_dir else None
-    if runs_dir is None and latest_job and isinstance(latest_job.get("runs_dir"), str):
-        runs_dir = Path(str(latest_job["runs_dir"])).resolve()
+    latest_runs_dir_raw = str((latest_job or {}).get("runs_dir") or "").strip()
+    if runs_dir is None and latest_runs_dir_raw:
+        runs_dir = Path(latest_runs_dir_raw).resolve()
 
     state: dict[str, object] | None = None
     schedule_rows: list[dict[str, str]] = []

@@ -2324,6 +2324,7 @@ def render_split_worker_instruction(
             "- Set `entity_search_required = yes` for every token in this shard.\n"
             "- If no reliable entity mapping exists after best-effort research, keep `mapped_entity_name = []` but still include real evidence URLs and source types.\n"
             "- Do not use `needs_manual_review = yes` as a substitute for skipping search.\n"
+            "- If multiple entities each have strong, direct, and stable responsibility evidence, preserve the parallel multi-entity mapping instead of collapsing to a single steward or company.\n"
         )
     else:
         search_guarantee_note = ""
@@ -2344,6 +2345,7 @@ def render_split_worker_instruction(
         f"{prefix_note}"
         f"{search_guarantee_note}"
         "- If a token truly has no supported entity mapping after best-effort search, keep `mapped_entity_name = []` but still provide real evidence and keep the row schema-valid.\n"
+        "- Multi-entity output is valid when each entity independently clears the evidence bar; do not mark manual review just because both a foundation and an operating company belong in the row.\n"
         "- Do not fabricate placeholder manual-review rows just to close the shard.\n"
         "- Finish the assigned shard, write rows incrementally, then exit.\n\n"
         f"{base_instruction_text.rstrip()}\n"
