@@ -1,0 +1,24 @@
+{
+  "part5_token_company_count": 5913,
+  "token_company_deal_count": 15223,
+  "fund_count_from_token_companies": 1413,
+  "unique_investor_candidates_before_metadata_filter": 13971,
+  "unique_investors_with_metadata": 13970,
+  "part6_input_rows": 13970,
+  "source_method_counts": {
+    "company_investor_relation": 61727,
+    "deal_investor_relation": 65007,
+    "investor_investment_relation": 64835,
+    "fund_investment_relation": 4127
+  },
+  "missing_investor_metadata_count": 1,
+  "missing_investor_metadata_ids_sample": [
+    "469961-56"
+  ],
+  "outputs": {
+    "part6_investor_input_csv": "/Users/benlao/Downloads/STANFORD_20260201/part5_to_part6/output/part6_investor_input.csv",
+    "investor_candidate_audit_csv": "/Users/benlao/Downloads/STANFORD_20260201/part5_to_part6/output/investor_candidate_audit.csv",
+    "token_company_universe_csv": "/Users/benlao/Downloads/STANFORD_20260201/part5_to_part6/output/token_company_universe.csv",
+    "summary_json": "/Users/benlao/Downloads/STANFORD_20260201/part5_to_part6/output/summary.json"
+  }
+}
