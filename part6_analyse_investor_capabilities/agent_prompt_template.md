@@ -31,7 +31,7 @@ Do not do:
 
 1. Read `Plan.md`.
 2. Read the assigned investor row.
-3. Determine why the row appears in `crypto_investor.csv`.
+3. Determine why the row appears in the Part5-to-Part6 investor graph batch. Use `MatchedKeywords`, `MatchedColumns`, and `InvestorCapabilityContext` to understand the token-company relationship path.
 4. Fill `primary_investor_type`, `investor_archetype`, `crypto_native_likelihood`, `operating_capability_likelihood`, `search_tier`, `capability_search_required`, `risk_flags`, and `classifier_reason`.
 5. Write the classifier row.
 6. If `search_tier = skip_candidate`, write a completed result row with all six capability flags = `no`, `capability_labels = []`, and a clear `capability_search_reason`.

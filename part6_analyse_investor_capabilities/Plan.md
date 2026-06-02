@@ -3,7 +3,12 @@
 ## Goal
 
 Input:
-- `part2_build_crypto_candidate/output/crypto_investor.csv`
+- `part5_to_part6/output/part6_batches/batch_*.jsonl`
+
+Source lineage:
+- Part5 identifies token-bearing companies from `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`.
+- `part5_to_part6/scripts/1_build_part6_investor_input.py` expands those companies into related investors through PitchBook investor/deal/fund relationships.
+- `part5_to_part6/output/part6_batches/` is the canonical Part6 task input. Each JSONL row contains immutable task identity fields and a Part6-shaped `input_row`.
 
 Authoritative outputs:
 - `part6_analyse_investor_capabilities/agent_runs/crypto_investor/classifier_results.csv`
@@ -24,8 +29,8 @@ The harness may also record supplemental `other_flags`, but the six labels above
 ## Architecture
 
 The harness follows the existing multi-round control-plane shape established in part5:
-1. extract compact investor inputs from `crypto_investor.csv`
-2. build fixed-size JSONL batches
+1. consume fixed-size JSONL batches from `part5_to_part6/output/part6_batches/`
+2. prepare isolated worker run directories from those batch files
 3. run a classifier/router pass for every investor
 4. write classifier decisions to `classifier_results.csv`
 5. route each investor to `full`, `light`, or `skip_candidate`
@@ -67,6 +72,8 @@ Required extracted fields:
 - `MatchedKeywords`
 - `MatchedColumns`
 - `InvestorCapabilityContext`
+- `SearchPolicy`
+- `AgentTaskScope`
 
 Text limits:
 - `Description`: max 700 chars
