@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from part5_schedule_io import write_schedule_csv
+from result_schema import RESULT_CSV_COLUMNS
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PART5_DIR = SCRIPT_DIR.parent
@@ -71,29 +72,6 @@ CLASSIFIER_CSV_COLUMNS = [
     "project_search_required",
     "risk_flags",
     "classifier_reason",
-]
-
-RESULT_CSV_COLUMNS = [
-    "task_index",
-    "company_id",
-    "company_name",
-    "normalized_domain",
-    "company_type",
-    "crypto_project_likelihood",
-    "project_search_required",
-    "project_search_reason",
-    "project_name",
-    "project_url",
-    "status",
-    "completed_at",
-    "token_ticker",
-    "token_name",
-    "token_url",
-    "has_token_evidence",
-    "evidence_urls",
-    "evidence_source_types",
-    "confidence",
-    "needs_manual_review",
 ]
 
 
@@ -244,13 +222,22 @@ def normalize_row_fields(row: dict[str, Any], fieldnames: list[str]) -> dict[str
         normalized["company_type"] = "investment_or_holdings"
 
     if fieldnames == RESULT_CSV_COLUMNS:
-        token_ticker = normalized.get("token_ticker", "").strip()
-        token_name = normalized.get("token_name", "").strip()
-        token_url = normalized.get("token_url", "").strip()
-        if not token_ticker and not token_name and not token_url:
-            normalized["token_ticker"] = "[]"
-            normalized["token_name"] = "[]"
-            normalized["token_url"] = "[]"
+        if not normalized.get("token_results", "").strip():
+            normalized["token_results"] = "[]"
+        if not normalized.get("rule_A_token_results", "").strip():
+            normalized["rule_A_token_results"] = "[]"
+        if not normalized.get("rule_B_token_results", "").strip():
+            normalized["rule_B_token_results"] = "[]"
+        for prefix in ["rule_A", "rule_B"]:
+            include_column = f"include_{prefix}"
+            result_column = f"{prefix}_token_results"
+            reason_column = f"{prefix}_decision_reason"
+            if not normalized.get(include_column, "").strip():
+                normalized[include_column] = "pending"
+            if not normalized.get(result_column, "").strip():
+                normalized[result_column] = "[]"
+            if not normalized.get(reason_column, "").strip():
+                normalized[reason_column] = ""
 
         manual_value = normalized.get("needs_manual_review", "").strip()
         confidence_value = normalized.get("confidence", "").strip()
@@ -1402,8 +1389,10 @@ def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[s
     searched_no_token_rows = 0
     skip_candidate_rows = 0
     manual_review_rows = 0
+    rule_a_rows = 0
+    rule_b_rows = 0
     for row in rows:
-        token_values = parse_json_list(row.get("token_ticker", ""))
+        token_values = parse_json_list(row.get("token_results", ""))
         if token_values:
             token_rows += 1
         else:
@@ -1413,6 +1402,10 @@ def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[s
                 skip_candidate_rows += 1
         if (row.get("needs_manual_review") or "").strip() == "yes":
             manual_review_rows += 1
+        if (row.get("include_rule_A") or "").strip() == "yes":
+            rule_a_rows += 1
+        if (row.get("include_rule_B") or "").strip() == "yes":
+            rule_b_rows += 1
     summary = {
         "task_count": task_count,
         "rows_written": len(rows),
@@ -1420,6 +1413,8 @@ def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[s
         "rows_without_ticker": max(0, len(rows) - token_rows),
         "searched_no_token_rows": searched_no_token_rows,
         "skip_candidate_rows": skip_candidate_rows,
+        "rule_A_positive_rows": rule_a_rows,
+        "rule_B_positive_rows": rule_b_rows,
         "manual_review_rows": manual_review_rows,
         "search_complete": len(rows) == task_count,
     }
@@ -1487,7 +1482,7 @@ def render_split_worker_instruction(
             "- Every company in this shard must be searched before you conclude that no fungible token ticker exists.\n"
             "- Do not use `search_tier = skip_candidate` in classifier output for this shard.\n"
             "- Set `project_search_required = yes` for every company in this shard.\n"
-            "- If a company appears non-tokenized after best-effort research, keep `token_ticker = []` but still include real evidence URLs and source types.\n"
+            "- If a company appears non-tokenized after best-effort research, keep `token_results = []` but still include real evidence URLs and source types.\n"
             "- Do not use `needs_manual_review = yes` as a substitute for skipping search.\n"
         )
     else:
@@ -1508,7 +1503,7 @@ def render_split_worker_instruction(
         "- This worker owns exactly this shard and must not write sibling shard files or the parent attempt CSVs directly.\n"
         f"{prefix_note}"
         f"{search_guarantee_note}"
-        "- If a company truly has no supported fungible token ticker after best-effort search, keep `token_ticker = []` but still provide real evidence and keep the row schema-valid.\n"
+        "- If a company truly has no supported fungible token mapping after best-effort search, keep `token_results = []` but still provide real evidence and keep the row schema-valid.\n"
         "- Do not fabricate placeholder manual-review rows just to close the shard.\n"
         "- Finish the assigned shard, write rows incrementally, then exit.\n\n"
         f"{base_instruction_text.rstrip()}\n"

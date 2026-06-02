@@ -11,6 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from part5_schedule_io import write_schedule_csv
+from result_schema import (
+    JSON_LIST_COLUMNS,
+    LEGACY_RESULT_CSV_COLUMNS_NO_RULES,
+    LEGACY_RESULT_CSV_COLUMNS_WITH_RULES,
+    LEGACY_VERIFICATION_CSV_COLUMNS,
+    RESULT_CSV_COLUMNS,
+    TOKEN_RESULT_COLUMNS,
+    VERIFICATION_CSV_COLUMNS,
+    migrate_legacy_result_row,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -30,29 +40,6 @@ HEADER_ONLY_RERUN_BATCHES_MD = "header_only_rerun_batches.md"
 DEFAULT_STARTUP_NO_ROW_TIMEOUT_SECONDS = 300
 DEFAULT_HEADER_ONLY_TIMEOUT_SECONDS = 300
 
-RESULT_CSV_COLUMNS = [
-    "task_index",
-    "company_id",
-    "company_name",
-    "normalized_domain",
-    "company_type",
-    "crypto_project_likelihood",
-    "project_search_required",
-    "project_search_reason",
-    "project_name",
-    "project_url",
-    "status",
-    "completed_at",
-    "token_ticker",
-    "token_name",
-    "token_url",
-    "has_token_evidence",
-    "evidence_urls",
-    "evidence_source_types",
-    "confidence",
-    "needs_manual_review",
-]
-
 CLASSIFIER_CSV_COLUMNS = [
     "task_index",
     "company_id",
@@ -66,13 +53,7 @@ CLASSIFIER_CSV_COLUMNS = [
     "classifier_reason",
 ]
 
-LIST_COLUMNS = [
-    "project_name",
-    "project_url",
-    "token_ticker",
-    "token_name",
-    "token_url",
-]
+LIST_COLUMNS = JSON_LIST_COLUMNS
 
 ALLOWED_COMPANY_TYPES = {
     "protocol_or_network",
@@ -92,28 +73,23 @@ ALLOWED_COMPANY_TYPES = {
 
 ALLOWED_LIKELIHOODS = {"high", "medium", "low", "none", "unclear"}
 ALLOWED_YES_NO = {"yes", "no"}
+ALLOWED_RULE_INCLUDE = {"yes", "no", "pending"}
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 ALLOWED_SEARCH_TIERS = {"full", "light", "skip_candidate"}
 SOURCE_TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
 
-VERIFICATION_CSV_COLUMNS = [
-    "task_index",
-    "company_id",
-    "company_name",
-    "classifier_search_tier",
-    "worker_token_ticker",
-    "verifier_search_tier",
-    "verifier_token_ticker",
-    "verdict",
-    "error_type",
-    "error_reason",
-    "evidence_urls",
-    "recommended_action",
-    "corrected_result_row_json",
-]
-
 ALLOWED_VERDICTS = {
     "pass",
+    "missing_original_token",
+    "extra_original_token",
+    "wrong_original_token_mapping",
+    "missing_rule_A_token",
+    "extra_rule_A_token",
+    "wrong_rule_A_classification",
+    "missing_rule_B_token",
+    "extra_rule_B_token",
+    "wrong_rule_B_classification",
+    "invalid_token_result_json",
     "suspected_missing_token",
     "suspected_extra_token",
     "wrong_project_mapping",
@@ -1119,7 +1095,7 @@ def repair_shifted_result_row(row: dict[str, str]) -> dict[str, str]:
     for column in LIST_COLUMNS:
         repaired[column] = normalize_json_list_string(repaired.get(column, ""))
 
-    return repaired
+    return normalize_rule_decision_fields(repaired)
 
 
 def normalize_result_row_payload(payload: dict) -> dict[str, str]:
@@ -1136,7 +1112,82 @@ def normalize_result_row_payload(payload: dict) -> dict[str, str]:
             normalized[column] = normalize_json_list_string(value)
         else:
             normalized[column] = str(value)
+    return normalize_rule_decision_fields(normalized)
+
+
+def normalize_rule_decision_fields(row: dict[str, str]) -> dict[str, str]:
+    normalized = dict(row)
+    for column in TOKEN_RESULT_COLUMNS:
+        normalized[column] = normalize_json_list_string(normalized.get(column, ""))
+        if not normalized[column]:
+            normalized[column] = "[]"
+    for rule in ["A", "B"]:
+        include_column = f"include_rule_{rule}"
+        result_column = f"rule_{rule}_token_results"
+        reason_column = f"rule_{rule}_decision_reason"
+        if not (normalized.get(include_column) or "").strip():
+            normalized[include_column] = "pending"
+        normalized[result_column] = normalize_json_list_string(normalized.get(result_column, ""))
+        normalized[reason_column] = (normalized.get(reason_column) or "").strip()
     return normalized
+
+
+def parse_json_list_value(value: str) -> list[Any] | None:
+    try:
+        parsed = json.loads((value or "").strip())
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def validate_token_result_objects(
+    value: str,
+    column: str,
+    require_positive_fields: bool,
+) -> tuple[int, list[str]]:
+    parsed = parse_json_list_value(value)
+    if parsed is None:
+        return 0, [f"{column} is not a valid JSON list"]
+    errors: list[str] = []
+    for index, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            errors.append(f"{column}[{index}] must be a JSON object")
+            continue
+        symbol = str(item.get("token_symbol", "") or "").strip()
+        name = str(item.get("token_name", "") or "").strip()
+        reason = str(item.get("reason", "") or "").strip()
+        evidence_urls = item.get("evidence_urls", [])
+        source_types = item.get("evidence_source_types", [])
+        if require_positive_fields:
+            if not symbol:
+                errors.append(f"{column}[{index}].token_symbol is required")
+            if not name:
+                errors.append(f"{column}[{index}].token_name is required")
+            if not reason:
+                errors.append(f"{column}[{index}].reason is required")
+            if not isinstance(evidence_urls, list) or not evidence_urls:
+                errors.append(f"{column}[{index}].evidence_urls must be a non-empty JSON list")
+        if evidence_urls and not isinstance(evidence_urls, list):
+            errors.append(f"{column}[{index}].evidence_urls must be a JSON list")
+        if isinstance(evidence_urls, list):
+            invalid_urls = [
+                str(url)
+                for url in evidence_urls
+                if not str(url).startswith(("http://", "https://"))
+            ]
+            if invalid_urls:
+                errors.append(f"{column}[{index}].evidence_urls contains non-http values")
+        if source_types and not isinstance(source_types, list):
+            errors.append(f"{column}[{index}].evidence_source_types must be a JSON list")
+        if isinstance(source_types, list):
+            invalid_source_types = [
+                str(source_type)
+                for source_type in source_types
+                if not SOURCE_TYPE_PATTERN.match(str(source_type))
+            ]
+            if invalid_source_types:
+                errors.append(f"{column}[{index}].evidence_source_types contains invalid labels")
+    return len(parsed), errors
 
 
 def parse_corrected_result_row(
@@ -1187,6 +1238,37 @@ def validate_result_row(row: dict[str, str], source: Path) -> list[str]:
         errors.append("needs_manual_review must be yes or no")
     if row.get("confidence") not in ALLOWED_CONFIDENCE:
         errors.append("confidence must be high, medium, or low")
+    token_count, token_result_errors = validate_token_result_objects(
+        row.get("token_results", ""),
+        "token_results",
+        require_positive_fields=True,
+    )
+    errors.extend(token_result_errors)
+    if token_count == 0 and not (row.get("token_decision_reason") or "").strip():
+        errors.append("token_results=[] requires token_decision_reason")
+    for rule in ["A", "B"]:
+        include_value = (row.get(f"include_rule_{rule}") or "").strip()
+        result_column = f"rule_{rule}_token_results"
+        reason_column = f"rule_{rule}_decision_reason"
+        rule_token_count, rule_errors = validate_token_result_objects(
+            row.get(result_column, ""),
+            result_column,
+            require_positive_fields=include_value == "yes",
+        )
+        errors.extend(rule_errors)
+        if include_value not in ALLOWED_RULE_INCLUDE:
+            errors.append(f"include_rule_{rule} must be yes, no, or pending")
+        if include_value == "yes":
+            if rule_token_count == 0:
+                errors.append(f"include_rule_{rule}=yes requires {result_column}")
+        elif include_value == "no":
+            if rule_token_count > 0:
+                errors.append(f"include_rule_{rule}=no requires empty {result_column}")
+            if not (row.get(reason_column) or "").strip():
+                errors.append(f"include_rule_{rule}=no requires {reason_column}")
+        elif include_value == "pending":
+            if rule_token_count > 0:
+                errors.append(f"include_rule_{rule}=pending requires empty {result_column}")
     if row.get("project_search_required") == "no" and not (row.get("project_search_reason") or "").strip():
         errors.append("project_search_required=no requires project_search_reason")
     has_token_evidence = (row.get("has_token_evidence") or "").strip()
@@ -1214,9 +1296,6 @@ def validate_result_row(row: dict[str, str], source: Path) -> list[str]:
         if invalid_source_types:
             errors.append("evidence_source_types contains invalid labels")
 
-    token_count = json_list_length(row.get("token_ticker", ""))
-    if token_count > 0 and not ((row.get("token_url") or "").strip() or (row.get("evidence_urls") or "").strip()):
-        errors.append("token_ticker is non-empty but token_url/evidence_urls are empty")
     if token_count > 0:
         if not evidence_urls:
             errors.append("token-positive rows require evidence_urls")
@@ -1367,6 +1446,7 @@ def canonicalize_result_row(row: dict[str, str]) -> dict[str, str]:
     normalized["confidence"] = normalize_confidence_value(normalized.get("confidence", ""))
     for column in LIST_COLUMNS:
         normalized[column] = normalize_json_list_string(normalized.get(column, ""))
+    normalized = normalize_rule_decision_fields(normalized)
     normalized = repair_shifted_result_row(normalized)
     normalized["confidence"] = normalize_confidence_value(normalized.get("confidence", ""))
     return normalized
@@ -1424,6 +1504,11 @@ def collect_worker_rows(
                 duplicate_task_indexes.add(task_index)
             seen_task_indexes.add(task_index)
             validation_errors.extend(validate_result_row(row, results_csv))
+            for rule in ["A", "B"]:
+                if (row.get(f"include_rule_{rule}") or "").strip() == "pending":
+                    validation_errors.append(
+                        f"{results_csv}: task_index={task_index}: fresh worker rows cannot use include_rule_{rule}=pending"
+                    )
             if requires_search_guarantee(schedule_row) and row.get("project_search_required") != "yes":
                 validation_errors.append(
                     f"{results_csv}: task_index={task_index}: search-guarantee rerun batches require project_search_required=yes"
@@ -1566,12 +1651,19 @@ def collect_verification_rows(
                         validation_errors.append(
                             f"{report}: task_index={task_index}: corrected_result_row_json company_id mismatch"
                         )
-                    verifier_token_ticker = normalize_json_list_string(row.get("verifier_token_ticker", ""))
-                    corrected_token_ticker = normalize_json_list_string(corrected_row.get("token_ticker", ""))
-                    if verifier_token_ticker and corrected_token_ticker != verifier_token_ticker:
-                        validation_errors.append(
-                            f"{report}: task_index={task_index}: corrected_result_row_json token_ticker must match verifier_token_ticker"
-                        )
+                    verifier_result_checks = [
+                        ("verifier_token_results", "token_results"),
+                        ("verifier_rule_A_token_results", "rule_A_token_results"),
+                        ("verifier_rule_B_token_results", "rule_B_token_results"),
+                    ]
+                    for verifier_column, result_column in verifier_result_checks:
+                        verifier_value = normalize_json_list_string(row.get(verifier_column, ""))
+                        corrected_value = normalize_json_list_string(corrected_row.get(result_column, ""))
+                        if verifier_value and corrected_value != verifier_value:
+                            validation_errors.append(
+                                f"{report}: task_index={task_index}: corrected_result_row_json {result_column} "
+                                f"must match {verifier_column}"
+                            )
             if not allow_unresolved_verification and action in BLOCKING_VERIFICATION_ACTIONS:
                 worker_row = worker_rows_by_task.get(task_index)
                 edit_resolved = (
@@ -1667,12 +1759,18 @@ def load_existing_results(path: Path, replace_output: bool) -> list[dict[str, st
     if replace_output or not path.exists():
         return []
     header, rows = load_csv(path)
+    if header == RESULT_CSV_COLUMNS:
+        return [{column: row.get(column, "") for column in RESULT_CSV_COLUMNS} for row in rows]
+    if tuple(header) in {
+        tuple(LEGACY_RESULT_CSV_COLUMNS_WITH_RULES),
+        tuple(LEGACY_RESULT_CSV_COLUMNS_NO_RULES),
+    }:
+        return [normalize_result_row_payload(migrate_legacy_result_row(row)) for row in rows]
     if header != RESULT_CSV_COLUMNS:
         raise SystemExit(
-            f"Existing output CSV is not v2 schema: {path}. "
+            f"Existing output CSV is not current or supported legacy schema: {path}. "
             "Use --replace-output or write to a different --output-csv."
         )
-    return [{column: row.get(column, "") for column in RESULT_CSV_COLUMNS} for row in rows]
 
 
 def load_existing_classifier_results(path: Path, replace_output: bool) -> list[dict[str, str]]:

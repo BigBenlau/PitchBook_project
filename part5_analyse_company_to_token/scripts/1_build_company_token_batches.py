@@ -18,7 +18,7 @@ DEFAULT_TEMPLATE = PART5_DIR / "agent_prompt_template.md"
 DEFAULT_OUTPUT_DIR = PART5_DIR / "agent_task_batches" / "crypto_company"
 DEFAULT_BATCH_SIZE = 30
 DEFAULT_SEARCH_POLICY = "free_search_with_primary_source_priority"
-DEFAULT_TASK_SCOPE = "company_relevance_classification|project_token_mapping|fungible_token_ticker"
+DEFAULT_TASK_SCOPE = "company_relevance_classification|project_token_mapping|fungible_token_mapping|rule_A_direct_creation|rule_B_founding_entity"
 
 INPUT_COLUMNS = [
     "task_index",

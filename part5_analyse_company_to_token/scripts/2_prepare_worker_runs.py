@@ -8,6 +8,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from result_schema import RESULT_CSV_COLUMNS, VERIFICATION_CSV_COLUMNS
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PART5_DIR = SCRIPT_DIR.parent
@@ -20,29 +22,6 @@ DEFAULT_BATCH_DIR = PART5_DIR / "agent_task_batches" / "crypto_company"
 DEFAULT_RUNS_DIR = PART5_DIR / "agent_runs" / "crypto_company_parallel"
 DEFAULT_WORKERS = 5
 
-RESULT_CSV_COLUMNS = [
-    "task_index",
-    "company_id",
-    "company_name",
-    "normalized_domain",
-    "company_type",
-    "crypto_project_likelihood",
-    "project_search_required",
-    "project_search_reason",
-    "project_name",
-    "project_url",
-    "status",
-    "completed_at",
-    "token_ticker",
-    "token_name",
-    "token_url",
-    "has_token_evidence",
-    "evidence_urls",
-    "evidence_source_types",
-    "confidence",
-    "needs_manual_review",
-]
-
 CLASSIFIER_CSV_COLUMNS = [
     "task_index",
     "company_id",
@@ -54,22 +33,6 @@ CLASSIFIER_CSV_COLUMNS = [
     "project_search_required",
     "risk_flags",
     "classifier_reason",
-]
-
-VERIFICATION_CSV_COLUMNS = [
-    "task_index",
-    "company_id",
-    "company_name",
-    "classifier_search_tier",
-    "worker_token_ticker",
-    "verifier_search_tier",
-    "verifier_token_ticker",
-    "verdict",
-    "error_type",
-    "error_reason",
-    "evidence_urls",
-    "recommended_action",
-    "corrected_result_row_json",
 ]
 
 SCHEDULE_COLUMNS = [
@@ -367,7 +330,7 @@ def render_worker_base_instructions(
             "- This rerun window exists to guarantee actual search coverage. Do not use `search_tier = skip_candidate` in this rerun batch.\n"
             "- Every company in this batch must receive at least `light` search, so `project_search_required` must be `yes` for every company.\n"
             "- A no-token conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
-            "- Do not close a row as no-token only from company-type heuristics; perform the bounded or full search first, then conclude `token_ticker = []` if appropriate.\n"
+            "- Do not close a row as no-token only from company-type heuristics; perform the bounded or full search first, then conclude `token_results = []` if appropriate.\n"
         )
     return rendered
 
@@ -428,15 +391,19 @@ Worker result files:
 {result_paths}
 
 Task:
-- Independently check whether each company's `token_ticker` JSON list is correct.
+- Independently check whether each company's `token_results` JSON object list is correct.
+- Independently check whether each company's Rule A and Rule B outputs are correct.
 - Read the classifier/router result for every row before judging the worker result.
 - Check whether `search_tier` was too conservative for the row.
 - Check whether any `skip_candidate` decision was unreasonable or should have been routed to `light` or `full`.
-- Detect missing fungible token tickers.
-- Detect extra or unrelated token tickers.
+- Detect missing fungible token mappings.
+- Detect extra or unrelated token mappings.
 - Detect wrong company-to-project mapping.
 - Detect stock tickers, NFT-only symbols, chain names, or product codes incorrectly reported as fungible token tickers.
 - Detect `project_search_required = no` rows that should have been searched.
+- Detect Rule A over-inclusion where a company is only a foundation, BD/promotional entity, investor, token-sale/distribution participant, genesis-allocation recipient, or ordinary ecosystem participant.
+- Detect Rule B over-inclusion where a company is only a later venture arm, ecosystem fund, portfolio company, dApp, wallet, DEX, staking provider, investor, market maker, or ordinary ecosystem participant.
+- Detect missing Rule A/B token outputs when evidence shows the company directly created/co-created/led early core development or was an original founding entity.
 - Focus on token-positive rows, skipped-search rows, ambiguous brands, low/medium confidence rows, and multiple-token signals.
 - If you detect a systematic issue pattern, report it explicitly for the main agent using one of these cause labels when applicable: `classification`, `search`, `evidence_interpretation`, `csv_formatting`, `prompt_ambiguity`, `run_harness`, `other`.
 
@@ -457,9 +424,16 @@ Every row in the round should appear in `verification_report.csv`. Use `verdict 
 
 Allowed verdict values:
 - pass
-- suspected_missing_token
-- suspected_extra_token
-- wrong_project_mapping
+- missing_original_token
+- extra_original_token
+- wrong_original_token_mapping
+- missing_rule_A_token
+- extra_rule_A_token
+- wrong_rule_A_classification
+- missing_rule_B_token
+- extra_rule_B_token
+- wrong_rule_B_classification
+- invalid_token_result_json
 - non_fungible_or_stock_ticker
 - search_tier_too_conservative
 - search_should_not_have_been_skipped

@@ -17,6 +17,7 @@
 - 根據 `search_tier` 決定 full / light / skip_candidate 搜索深度。
 - 找出公司對應的 zero / one / many crypto projects。
 - 找出所有可靠映射到該公司或其 owned project 的 fungible token tickers。
+- 在原 company-to-token mapping 後，從公司出發評估是否存在符合 Rule A / Rule B 的 token。
 - 每家公司固定輸出一行 CSV。
 
 不做：
@@ -35,38 +36,39 @@
 3. 先做 company relevance classifier/router。
 4. 填寫 `company_type`、`crypto_project_likelihood`、`search_tier`、`project_search_required`、`risk_flags`、`classifier_reason`。
 5. 將 classifier/router 決策寫入 `classifier_results.csv`。
-6. 如果 `search_tier = skip_candidate`，不要做 full/light search，直接輸出一行，`token_ticker = []`。
+6. 如果 `search_tier = skip_candidate`，不要做 full/light search，直接輸出一行，`token_results = []`，`include_rule_A = no`，`include_rule_B = no`。
 7. 如果 `search_tier = light`，按固定 light query playbook 做 bounded lightweight token-existence check。
 8. 如果 `search_tier = full`，按固定 full query playbook 做 company -> project -> fungible token ticker mapping。
-9. 找到多個 project 或多個 token 時，仍輸出一行，用 JSON list 記錄。
-10. 若沒有可靠證據確認 fungible token，`token_ticker = []`，不要輸出 `no` 或 `unknown`。
-11. 若資料衝突、品牌映射不穩、或不確定是否漏報/多報，設 `needs_manual_review = yes`。
-12. former name / rebrand continuity、token family sweep、secondary-only token linkage 是固定補查步驟，不可略過。
-13. Worker 寫出的 batch-local `classifier_results.csv` / `results.csv` 只是中間產物，不是最終交付。
-14. 通過 verifier / collector 驗證後，完成搜索的 rows 必須被匯入 `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`。
-15. 所有 `needs_manual_review = yes` 的 rows 必須被匯入 `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`。
-16. 若使用者要求長時間無人值守地連續跑多個 batch window，主協調端應使用 `part5_analyse_company_to_token/scripts/6_start_long_running_supervisor.py` 啟動 detached supervisor，而不是手動逐輪串 `prepare -> launch -> mark-started -> watch`。
-17. detached longrun 預設必須優先使用 `systemd-run --user` 啟動 supervisor；只有在 `systemd-run` 失敗時才 fallback 到 `nohup` 加新 session。若未來需要新的 backlog / rerun 長跑，主路徑應優先使用 `--scheduler-mode queue` 啟動 `5_run_queue_supervisor.py`；`5_run_round_supervisor.py` 僅保留給 round-mode fallback 或前景阻塞式 round run。
-18. longrun launcher 與 supervisor 必須把解析好的絕對 `codex` binary path 顯式傳入 worker launch，不要依賴 systemd service 的 PATH 來找到 `codex`。
-19. 長跑模式會根據使用者指定的 batch-dir 或從 `agent_runs/crypto_company/results.csv` 找出下一個未完成 batch window，建立 run metadata，並將 `run_dir`、`pid`、`unit_name`、scheduler mode 與啟動參數寫入 `part5_analyse_company_to_token/agent_runs/crypto_company_longrun_latest.json`。
-20. 若未來需要新的 backlog 長跑，標準 execution path 是 queue-mode：batch-scoped prepare、持續 fill slots、serialized batch-scoped collect。round 仍保留在 `schedule.csv` 中做 grouping/reporting，但 queue-mode 不以 round barrier 決定何時啟下一個 batch。
-21. queue-mode 的 `--max-workers` 代表 live worker process budget，不保證永遠等於同時處理的 batch 數。若某個 batch 進入 split recovery，它可能同時佔用多個 worker process。
-22. 若使用者要求「檢查 longrun 狀態」或任何等價的長跑進度查詢，主協調端應優先執行 `part5_analyse_company_to_token/scripts/7_check_longrun_status.py`，用它來讀取 `crypto_company_longrun_latest.json`、`supervisor_state.json`、`schedule.csv` 與近期事件，而不是手動拼接多個檔案查詢。
-23. 長跑狀態查詢時，若 `crypto_company_longrun_latest.json` 含有 `unit_name`，必須先查 `systemctl --user` 的 unit 狀態，再補 heartbeat 與 host-process 掃描；只有在 systemd 狀態不可用時，才退回到 heartbeat 與 `ps -ef | grep part5`。
-24. 長跑狀態查詢的標準回報至少要包含：`status`、`phase`、`active_workers`、`round_summaries`。若當前 scheduler 是 queue mode，還應補 `slots`、`waiting_queue`、`tail_retry_queue`、`collect_queue`、`deferred_queue`。
-25. 若 `7_check_longrun_status.py` 發現 `supervisor` 已不可見、`active_workers=0`，但只有 worker log heartbeat 還在跳，應將其視為 `orphaned_worker_activity`，而不是健康的 running supervisor。
-26. 長跑 supervisor 的主路徑預設對每個 batch 套用 2 小時 wall-clock 上限，但 queue-mode 的 long-tail 規則是兩段式，不是第一次 timeout 就直接終態 defer。
-27. 第一次 long-tail timeout 時，主協調端必須終止該 batch 的 active workers、保留當前 partial prefix，並把它停放為：
+9. 完成原 token mapping 後，按 Rule A / Rule B 從公司出發判斷是否有 token 符合要求。
+10. 找到多個 project 或多個 token 時，仍輸出一行，用 JSON list 記錄。
+11. 若沒有可靠證據確認 fungible token，`token_results = []`，不要輸出 `no` 或 `unknown`。
+12. 若資料衝突、品牌映射不穩、或不確定是否漏報/多報，設 `needs_manual_review = yes`。
+13. former name / rebrand continuity、token family sweep、secondary-only token linkage 是固定補查步驟，不可略過。
+14. Worker 寫出的 batch-local `classifier_results.csv` / `results.csv` 只是中間產物，不是最終交付。
+15. 通過 verifier / collector 驗證後，完成搜索的 rows 必須被匯入 `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`。
+16. 所有 `needs_manual_review = yes` 的 rows 必須被匯入 `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv`。
+17. 若使用者要求長時間無人值守地連續跑多個 batch window，主協調端應使用 `part5_analyse_company_to_token/scripts/6_start_long_running_supervisor.py` 啟動 detached supervisor，而不是手動逐輪串 `prepare -> launch -> mark-started -> watch`。
+18. detached longrun 預設必須優先使用 `systemd-run --user` 啟動 supervisor；只有在 `systemd-run` 失敗時才 fallback 到 `nohup` 加新 session。若未來需要新的 backlog / rerun 長跑，主路徑應優先使用 `--scheduler-mode queue` 啟動 `5_run_queue_supervisor.py`；`5_run_round_supervisor.py` 僅保留給 round-mode fallback 或前景阻塞式 round run。
+19. longrun launcher 與 supervisor 必須把解析好的絕對 `codex` binary path 顯式傳入 worker launch，不要依賴 systemd service 的 PATH 來找到 `codex`。
+20. 長跑模式會根據使用者指定的 batch-dir 或從 `agent_runs/crypto_company/results.csv` 找出下一個未完成 batch window，建立 run metadata，並將 `run_dir`、`pid`、`unit_name`、scheduler mode 與啟動參數寫入 `part5_analyse_company_to_token/agent_runs/crypto_company_longrun_latest.json`。
+21. 若未來需要新的 backlog 長跑，標準 execution path 是 queue-mode：batch-scoped prepare、持續 fill slots、serialized batch-scoped collect。round 仍保留在 `schedule.csv` 中做 grouping/reporting，但 queue-mode 不以 round barrier 決定何時啟下一個 batch。
+22. queue-mode 的 `--max-workers` 代表 live worker process budget，不保證永遠等於同時處理的 batch 數。若某個 batch 進入 split recovery，它可能同時佔用多個 worker process。
+23. 若使用者要求「檢查 longrun 狀態」或任何等價的長跑進度查詢，主協調端應優先執行 `part5_analyse_company_to_token/scripts/7_check_longrun_status.py`，用它來讀取 `crypto_company_longrun_latest.json`、`supervisor_state.json`、`schedule.csv` 與近期事件，而不是手動拼接多個檔案查詢。
+24. 長跑狀態查詢時，若 `crypto_company_longrun_latest.json` 含有 `unit_name`，必須先查 `systemctl --user` 的 unit 狀態，再補 heartbeat 與 host-process 掃描；只有在 systemd 狀態不可用時，才退回到 heartbeat 與 `ps -ef | grep part5`。
+25. 長跑狀態查詢的標準回報至少要包含：`status`、`phase`、`active_workers`、`round_summaries`。若當前 scheduler 是 queue mode，還應補 `slots`、`waiting_queue`、`tail_retry_queue`、`collect_queue`、`deferred_queue`。
+26. 若 `7_check_longrun_status.py` 發現 `supervisor` 已不可見、`active_workers=0`，但只有 worker log heartbeat 還在跳，應將其視為 `orphaned_worker_activity`，而不是健康的 running supervisor。
+27. 長跑 supervisor 的主路徑預設對每個 batch 套用 2 小時 wall-clock 上限，但 queue-mode 的 long-tail 規則是兩段式，不是第一次 timeout 就直接終態 defer。
+28. 第一次 long-tail timeout 時，主協調端必須終止該 batch 的 active workers、保留當前 partial prefix，並把它停放為：
     - `status = needs_rerun`
     - `queue_state = tail_retry_pending`
     - `tail_retry_pending = yes`
     - `tail_retry_count += 1`
-28. `tail_retry_pending` batch 不得插回 primary waiting queue。只有在 ordinary `waiting_queue` 與 `collect_queue` 都清空後，才允許它做那次唯一的 tail retry。
-29. 目前政策 `max_tail_retries = 1`。同一個 batch 若在 parked tail retry 後再次超時，才正式標記為 terminal `deferred_long_tail`，寫入 `part5_analyse_company_to_token/agent_runs/crypto_company/long_tail_batches_pending.csv`。
-30. terminal `deferred_long_tail` 代表「這個 batch 在本次主 longrun 內仍未完成，需要之後單獨 rerun」，不是「已完成研究」。在最終總結裡，主協調端必須明確列出這些未完成 batch。
-31. queue-mode collect 是 batch-scoped 且 serialized。已完成 batch 可以先 lint/collect 並匯入全域 final outputs，不必等待同 round 其他 batch；但 terminal `deferred_long_tail` batch 必須排除在 collect scope 外。
-32. 所有 runtime-side `schedule.csv` 寫入都必須走 `part5_analyse_company_to_token/scripts/part5_schedule_io.py` 的 locked atomic write 路徑，不得直接用裸 `open(..., "w")` 重寫 live schedule。
-33. 中間 run 目錄可能會在匯入全域最終結果後刪除，所以 row schema、identity fields、evidence 欄位必須一次寫對，不能依賴本地 attempt 目錄長期保存。
+29. `tail_retry_pending` batch 不得插回 primary waiting queue。只有在 ordinary `waiting_queue` 與 `collect_queue` 都清空後，才允許它做那次唯一的 tail retry。
+30. 目前政策 `max_tail_retries = 1`。同一個 batch 若在 parked tail retry 後再次超時，才正式標記為 terminal `deferred_long_tail`，寫入 `part5_analyse_company_to_token/agent_runs/crypto_company/long_tail_batches_pending.csv`。
+31. terminal `deferred_long_tail` 代表「這個 batch 在本次主 longrun 內仍未完成，需要之後單獨 rerun」，不是「已完成研究」。在最終總結裡，主協調端必須明確列出這些未完成 batch。
+32. queue-mode collect 是 batch-scoped 且 serialized。已完成 batch 可以先 lint/collect 並匯入全域 final outputs，不必等待同 round 其他 batch；但 terminal `deferred_long_tail` batch 必須排除在 collect scope 外。
+33. 所有 runtime-side `schedule.csv` 寫入都必須走 `part5_analyse_company_to_token/scripts/part5_schedule_io.py` 的 locked atomic write 路徑，不得直接用裸 `open(..., "w")` 重寫 live schedule。
+34. 中間 run 目錄可能會在匯入全域最終結果後刪除，所以 row schema、identity fields、evidence 欄位必須一次寫對，不能依賴本地 attempt 目錄長期保存。
 
 ## Stage 1: Classifier Rules
 
@@ -240,7 +242,7 @@ Worker identity rules:
 
 Light tier hard rules:
 
-- 在輸出 `token_ticker = []` 前，必做 `exact-domain token probe`。
+- 在輸出 `token_results = []` 前，必做 `exact-domain token probe`。
 - 若任何 probe 出現 plausible company -> project -> token signal，必須升級為 `full`。
 - 若 probe 顯示 gaming / NFT row 有 live tokenized ecosystem 語言，不可維持 `skip_candidate` 或低置信 no-token 結論。
 - Light tier 的目的只是快速排除低機率 row，不是憑感覺結案。
@@ -262,12 +264,37 @@ Light tier hard rules:
 
 Full tier hard rules:
 
-- 在輸出 `token_ticker = []` 前，必做 `exact-domain token probe`。
-- 若只找到 token page，但不能映射回 official project / company，不可填入 `token_ticker`。
+- 在輸出 `token_results = []` 前，必做 `exact-domain token probe`。
+- 若只找到 token page，但不能映射回 official project / company，不可填入 `token_results`。
 - 若 company / project / token 三段任一段 mapping 在補查後仍不穩，設 `needs_manual_review = yes`。
 - 若 current official docs 與 older official launch materials 在 ticker naming 上衝突，優先 current official docs 的 active ticker；older ticker 視為 legacy naming，不當作主 ticker 輸出。
 - 遇到 token rename / migration / legacy ticker conflict 時，加入對應 `risk_flags`；若 current official ticker 加上一個 current corroborating source 已足夠穩定，可 `needs_manual_review = no`。
 - 若 live site identity 與 dataset description、former name、brand、project 名稱發生衝突，加入 `brand_project_mismatch` 或 `live_site_conflict`；只有在補查後仍不能穩定解釋時才保留 `needs_manual_review = yes`。
+
+### Rule A / Rule B Company-Outward Rules
+
+完成原 `token_results` 判斷後，必須從公司出發判斷是否有 token 符合 Rule A 或 Rule B。
+
+Rule A:
+
+- 只在公司直接創建、共同創建、主導早期核心技術開發，或作為官方核心工程公司負責 launch token 的 underlying blockchain / protocol / token system 時納入。
+- 不可因 foundation governance、branding、ecosystem promotion、standardization、business development、commercial adoption、partnerships、ICO/token sale/voucher sale/fundraising/distribution、genesis allocation、投資、持有、incubator、wallet、DEX、staking provider、market maker、ordinary ecosystem participation 而納入。
+
+Rule B:
+
+- 在公司被官方或可靠來源明確描述為 founding entity、co-founding entity、original founding organization 時納入。
+- initial core technical/business development pool 或 genesis allocation group 只有在該身份反映 original founding role 時才可納入。
+- 不可納入 later venture arm、later ecosystem fund、portfolio company、dApp、wallet、DEX、staking provider、incubator、investor、market maker、ordinary ecosystem participant。
+
+Rule A 比 Rule B 嚴格；一家公司可以 Rule B = yes 但 Rule A = no。
+
+輸出規則：
+
+- `include_rule_A` / `include_rule_B`: 新搜索 row 必須輸出 `yes` 或 `no`；`pending` 只用於 legacy results.csv schema backfill。
+- `rule_A_token_results`、`rule_B_token_results` 都必須是 JSON object-list string。
+- token result object 必須包含 `token_symbol`, `token_name`, `token_url`, `reason`, `evidence_urls`, `evidence_source_types`。
+- Rule A/B negative 時，對應 token result 必須是 `[]`，並填寫 `rule_A_decision_reason` / `rule_B_decision_reason`。
+- Rule A/B positive 時，每個 token object 的 `evidence_urls` 必須填入支持該 rule 的絕對 HTTP(S) URL list。
 
 ### Mandatory High-Frequency Follow-Up Rules
 
@@ -286,7 +313,7 @@ Full tier hard rules:
    - 若 token 只出現在 CoinGecko、CoinMarketCap、explorer、Blockspot、CoinStats、secondary article 等 secondary token pages，而 official company/project mapping 不夠穩，必再做一次 company -> project linkage pass。
    - 補查後若仍只有 secondary-only mapping：
      - 可以保留 token，但通常應 `needs_manual_review = yes`
-     - 或保留 `token_ticker = []`
+     - 或保留 `token_results = []`
    - 不可把 secondary-only token page 當成 clean high-confidence positive row。
 
 ### Resolution Pass Before Manual Review
@@ -379,10 +406,10 @@ Full tier hard rules:
 
 輸出必須是 CSV。若只處理一家公司，輸出 header 加一行資料；若處理多家公司，輸出一個 header，然後每家公司一行。
 
-CSV 欄位必須按以下 v2 schema 順序輸出：
+CSV 欄位必須按以下 v3 schema 順序輸出：
 
 ```csv
-task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_ticker,token_name,token_url,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_results,token_decision_reason,include_rule_A,rule_A_token_results,rule_A_decision_reason,include_rule_B,rule_B_token_results,rule_B_decision_reason,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
 ```
 
 字段規則：
@@ -399,15 +426,26 @@ task_index,company_id,company_name,normalized_domain,company_type,crypto_project
 - `project_url`: JSON list string；沒有則 `[]`。
 - `status`: 固定 `completed`。
 - `completed_at`: ISO timestamp；不知道可留空。
-- `token_ticker`: JSON list string；找到所有可靠 fungible tickers；沒有則 `[]`。
-- `token_name`: JSON list string；沒有則 `[]`。
-- `token_url`: JSON list string；沒有則 `[]`。
+- `token_results`: JSON object-list string；找到所有可靠 fungible token mapping；沒有則 `[]`。
+- `token_decision_reason`: 原 company-to-token mapping 的簡短判斷原因；`token_results = []` 時必須說明 no-token 理由。
+- `include_rule_A`: `yes` / `no` / `pending`；`pending` 只用於 legacy rows 尚未做 Rule A 判斷。
+- `rule_A_token_results`: JSON object-list string；符合 Rule A 的 token mappings；沒有則 `[]`。
+- `rule_A_decision_reason`: Rule A negative 或低信心時的 company-first 判斷原因；positive 時可簡短概括。
+- `include_rule_B`: `yes` / `no` / `pending`；`pending` 只用於 legacy rows 尚未做 Rule B 判斷。
+- `rule_B_token_results`: JSON object-list string；符合 Rule B 的 token mappings；沒有則 `[]`。
+- `rule_B_decision_reason`: Rule B negative 或低信心時的 company-first 判斷原因；positive 時可簡短概括。
 - `has_token_evidence`: 簡短證據摘要。
 - `evidence_urls`: 多個 URL 用 `|` 分隔，且必須是絕對 `http://` 或 `https://` URL。
 - `evidence_source_types`: 多個來源類型用 `|` 分隔，例如 `official_site|official_docs|coingecko|coinmarketcap|whitepaper|docs|explorer|exchange|secondary_source`。
 - `confidence`: `high` / `medium` / `low`。
 - `needs_manual_review`: `yes` / `no`。
 - `risk_flags` 在 classifier CSV 中必須是 JSON list string，例如 `["alias_or_former_name","token_keyword"]`；不可寫 `none`、`former_name`、`a|b`。
+
+`token_results`、`rule_A_token_results`、`rule_B_token_results` 的每個 object 必須使用以下 keys：
+
+```json
+{"token_symbol":"TOKEN","token_name":"Example Token","token_url":"https://example.com/token","reason":"short mapping reason","evidence_urls":["https://example.com"],"evidence_source_types":["official_site"]}
+```
 
 `confidence` 與 `needs_manual_review` 必須分開判斷：
 
@@ -421,7 +459,7 @@ task_index,company_id,company_name,normalized_domain,company_type,crypto_project
 - 若 no-token row 已完成 full search + resolution pass，且沒有 plausible owned fungible token 殘留，`low` confidence 也可以是 `needs_manual_review = no`。
 - `has_token_evidence` 不可留空。對 searched rows，不可只寫 bare `yes` 或 `no`，要簡短說明 positive 或 negative finding。
 - 若 `project_search_required = yes`，`evidence_urls` 與 `evidence_source_types` 都必須非空。
-- 若 `token_ticker != []`，`evidence_urls` 與 `evidence_source_types` 都必須足以支撐 company/project -> token mapping。
+- 若 `token_results != []`，`evidence_urls` 與 `evidence_source_types` 都必須足以支撐 company/project -> token mapping。
 
 CSV 安全規則：
 
@@ -491,8 +529,8 @@ AgentTaskScope: {AgentTaskScope}
 ## Output Template
 
 ```csv
-task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_ticker,token_name,token_url,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
-{task_index},{CompanyID},{CompanyName},{normalized_domain},protocol_or_network,high,yes,"company appears to operate a protocol or blockchain-native product","[""Example Protocol""]","[""https://example.com""]",completed,{completed_at},"[""TOKEN""]","[""Example Token""]","[""https://www.coingecko.com/en/coins/example""]","official docs and token data page map the project to TOKEN","https://example.com/|https://www.coingecko.com/en/coins/example","official_site|coingecko",high,no
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_results,token_decision_reason,include_rule_A,rule_A_token_results,rule_A_decision_reason,include_rule_B,rule_B_token_results,rule_B_decision_reason,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+{task_index},{CompanyID},{CompanyName},{normalized_domain},protocol_or_network,high,yes,"company appears to operate a protocol or blockchain-native product","[""Example Protocol""]","[""https://example.com""]",completed,{completed_at},"[{""token_symbol"":""TOKEN"",""token_name"":""Example Token"",""token_url"":""https://www.coingecko.com/en/coins/example"",""reason"":""official docs and token data page map the project to TOKEN"",""evidence_urls"":[""https://example.com/"",""https://www.coingecko.com/en/coins/example""],""evidence_source_types"":[""official_site"",""coingecko""]}]","official docs and token data page map the project to TOKEN",yes,"[{""token_symbol"":""TOKEN"",""token_name"":""Example Token"",""token_url"":""https://www.coingecko.com/en/coins/example"",""reason"":""Company directly created the protocol behind TOKEN."",""evidence_urls"":[""https://example.com/docs""],""evidence_source_types"":[""official_docs""]}]","Company directly created the protocol behind TOKEN.",yes,"[{""token_symbol"":""TOKEN"",""token_name"":""Example Token"",""token_url"":""https://www.coingecko.com/en/coins/example"",""reason"":""Company is an original founding entity of the protocol."",""evidence_urls"":[""https://example.com/about""],""evidence_source_types"":[""official_site""]}]","Company is an original founding entity of the protocol.","official docs and token data page map the project to TOKEN","https://example.com/|https://www.coingecko.com/en/coins/example","official_site|coingecko",high,no
 ```
 
 ## Round-End Verifier Prompt
@@ -512,7 +550,7 @@ Verifier 任務：
 - 先讀 classifier/router 結果，再判斷 worker 結果。
 - 檢查 `search_tier` 是否過度保守。
 - 檢查 `skip_candidate` 是否合理，是否應該改成 `light` 或 `full`。
-- 重新檢查每家公司 `token_ticker` list 是否漏報。
+- 重新檢查每家公司 `token_results` object list 是否漏報。
 - 重新檢查是否多報、不相關 ticker、stock ticker、NFT-only symbol、chain name、product code。
 - 檢查 `project_search_required = no` 的 row 是否真的應該跳過深搜。
 - 檢查多 project / 多 token 是否正確放在同一行 JSON list。
@@ -521,15 +559,22 @@ Verifier 任務：
 Verifier 輸出 `verification_report.csv`：
 
 ```csv
-task_index,company_id,company_name,classifier_search_tier,worker_token_ticker,verifier_search_tier,verifier_token_ticker,verdict,error_type,error_reason,evidence_urls,recommended_action,corrected_result_row_json
+task_index,company_id,company_name,classifier_search_tier,worker_token_results,verifier_search_tier,verifier_token_results,worker_rule_A_token_results,verifier_rule_A_token_results,worker_rule_B_token_results,verifier_rule_B_token_results,verdict,error_type,error_reason,evidence_urls,recommended_action,corrected_result_row_json
 ```
 
 允許 `verdict`：
 
 - `pass`
-- `suspected_missing_token`
-- `suspected_extra_token`
-- `wrong_project_mapping`
+- `missing_original_token`
+- `extra_original_token`
+- `wrong_original_token_mapping`
+- `missing_rule_A_token`
+- `extra_rule_A_token`
+- `wrong_rule_A_classification`
+- `missing_rule_B_token`
+- `extra_rule_B_token`
+- `wrong_rule_B_classification`
+- `invalid_token_result_json`
 - `non_fungible_or_stock_ticker`
 - `search_tier_too_conservative`
 - `search_should_not_have_been_skipped`

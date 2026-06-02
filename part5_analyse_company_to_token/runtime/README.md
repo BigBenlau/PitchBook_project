@@ -14,6 +14,8 @@ Principles:
 - `scripts/5_run_queue_supervisor.py` is the default unattended queue-mode scheduler used when a new backlog longrun or rerun is launched.
 - `scripts/3_collect_results.py` validates and merges completed batch outputs into the global final files; queue-mode collect is batch-scoped and serialized.
 - `scripts/part5_schedule_io.py` is the shared `schedule.csv` write path. All runtime writers must use its locked atomic write flow instead of rewriting the CSV directly.
+- Final `results.csv` rows preserve the original company-to-token mapping in `token_results`, a JSON object-list field.
+- Rule A / Rule B token outputs use the same JSON object-list shape in `rule_A_token_results` and `rule_B_token_results`; each token object carries symbol, name, URL, reason, evidence URLs, and evidence source types.
 - Every respawn creates a new attempt directory; old attempts remain for debugging only.
 - Unattended longrun semantics for future backlog reruns are queue-first:
   - `scripts/6_start_long_running_supervisor.py` launches detached runs and supports `--scheduler-mode round|queue`.

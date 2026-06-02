@@ -52,18 +52,28 @@ Method:
 - Use `search_tier = full`, `light`, or `skip_candidate` according to `Plan.md`.
 - Use `project_search_required = yes` for `full` and `light`; use `no` only for `skip_candidate`.
 - Crypto-native infrastructure rows with clear protocol/product context, such as MEV, validator, relayer, builder, rollup, node, or chain infra products, must not use `skip_candidate`; use at least `light`.
-- If `search_tier = skip_candidate`, write one completed result row with `token_ticker = []` and a clear `project_search_reason` derived from `classifier_reason`.
+- If `search_tier = skip_candidate`, write one completed result row with `token_results = []`, `include_rule_A = no`, `include_rule_B = no`, and clear decision reasons derived from `classifier_reason`.
 - If `search_tier = light`, run a bounded token-existence check.
 - If `search_tier = full`, search freely to identify company -> project -> fungible token ticker mapping.
 - If light search finds a plausible token or project signal, upgrade to full search in the same run.
 - Before finalizing any `skip_candidate` or searched no-token row, run a mandatory former-name / alias / rebrand continuity pass. If former-name or rebrand material points to a tokenized project, do not close the row as skipped/no-token until that lineage is resolved.
 - For protocol, rewards, governance, staking, wrapper, liquid-staked, bridge, or tokenomics language, run a mandatory token-family sweep before closing the row. Do not stop at the first ticker if current docs imply multiple fungible tokens.
-- If a token is supported only by secondary token pages, market aggregators, or other non-primary sources, run one extra company/project linkage pass. If the token still remains secondary-only, do not output it as a clean high-confidence row; either keep `token_ticker = []` or keep the token with `needs_manual_review = yes`.
+- If a token is supported only by secondary token pages, market aggregators, or other non-primary sources, run one extra company/project linkage pass. If the token still remains secondary-only, do not output it as a clean high-confidence row; either keep `token_results = []` or keep the token with `needs_manual_review = yes`.
 - Prefer official and primary sources, but do not limit research to official website, CoinGecko, or CoinMarketCap.
 - Return exactly one CSV row per company.
-- If no supported token is found, set `token_ticker` to `[]`.
-- If multiple tokens are found, keep one row and put all symbols in `token_ticker` as a JSON list, e.g. `["ABC","XYZ"]`.
-- Also use JSON-list strings for `project_name`, `project_url`, `token_name`, and `token_url`.
+- If no supported token is found, set `token_results` to `[]` and write a clear `token_decision_reason`.
+- If multiple tokens are found, keep one row and put all mappings in `token_results` as a JSON object list.
+- Each token result object must include `token_symbol`, `token_name`, `token_url`, `reason`, `evidence_urls`, and `evidence_source_types`.
+- Also use JSON-list strings for `project_name` and `project_url`.
+- After the original company-to-token mapping, evaluate Rule A and Rule B from the company outward.
+- Rule A is stricter: include a token only when the company directly created, co-created, led early core technical development, or was the official core engineering company responsible for launching the token's blockchain/protocol/token system.
+- Rule B includes officially recognized founding entities, co-founding entities, or original founding organizations of a blockchain/protocol ecosystem, even when they are not direct protocol creators.
+- Do not use foundation governance, branding, ecosystem promotion, business development, commercial adoption, token sale, genesis allocation, investment, holding, wallet, DEX, staking, market-making, or ordinary ecosystem participation as Rule A evidence.
+- Do not use later venture arms, later ecosystem funds, portfolio companies, ordinary dApps, wallets, DEXs, staking providers, incubators, investors, or market makers as Rule B evidence.
+- Write `include_rule_A` and `include_rule_B` as `yes` or `no` after completing the Rule A/B search. Use `pending` only for legacy schema backfill rows that have not yet been evaluated.
+- Use JSON object-list strings for `rule_A_token_results` and `rule_B_token_results`.
+- Each Rule A/B token result object must include `token_symbol`, `token_name`, `token_url`, `reason`, `evidence_urls`, and `evidence_source_types`.
+- Write `rule_A_decision_reason` and `rule_B_decision_reason` for no-token or low-confidence decisions.
 - `has_token_evidence` must never be blank. For searched rows, write a concise evidence summary, not bare `yes` or `no`.
 - For searched no-token rows, make `has_token_evidence` explicit that a best-effort search found no supported fungible token ticker for the company/project lineage you checked.
 - For searched rows, `evidence_urls` and `evidence_source_types` must both be non-empty.
@@ -91,10 +101,12 @@ Result CSV header:
 Final response should report:
 - classifier rows written
 - total data rows written
-- rows with non-empty `token_ticker`
-- rows with `token_ticker = []`
-- rows with `project_search_required = yes` and `token_ticker = []`
-- rows with `project_search_required = no` and `token_ticker = []`
+- rows with non-empty `token_results`
+- rows with `token_results = []`
+- rows with `project_search_required = yes` and `token_results = []`
+- rows with `project_search_required = no` and `token_results = []`
+- rows with `include_rule_A = yes`
+- rows with `include_rule_B = yes`
 - rows by `search_tier`
 - `needs_manual_review = yes` count
 - authoritative classifier file path

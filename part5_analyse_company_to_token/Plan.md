@@ -33,7 +33,7 @@ Final-output authority:
 - Batch-local run directories, attempt CSVs, round verifier outputs, and rerun windows are intermediate artifacts only. They may be deleted after merge.
 - A round is not operationally complete until validated rows have been promoted into the global final outputs above.
 
-The task is to map each company to zero, one, or multiple crypto projects and fungible token tickers.
+The task is to map each company to zero, one, or multiple crypto projects and fungible token tickers, then separately evaluate whether any token qualifies under Rule A and Rule B from the company outward.
 
 The task is not:
 
@@ -43,7 +43,7 @@ The task is not:
 - listing venue/date research
 - investment or market analysis
 
-The final result must contain exactly one row per company. A company with multiple projects or multiple fungible tokens still has one row, with list-valued fields.
+The final result must contain exactly one row per company. A company with multiple projects or multiple fungible tokens still has one row, with list-valued fields. The original token mapping, Rule A mapping, and Rule B mapping must all use token-symbol and token-name list fields.
 
 ## 2. Harness Architecture
 
@@ -68,7 +68,7 @@ Pipeline:
 9. Each worker writes one `results.csv` for its assigned batch.
 10. Collector performs structural validation on classifier/router and worker outputs.
 11. Before the round ends, spawn a fresh verifier subagent to independently check token correctness for the round.
-12. The verifier reads the classifier/router outputs as part of its review and checks whether each company's `token_ticker` list has omissions, extra tickers, wrong project mapping, or non-fungible/stock ticker contamination.
+12. The verifier reads the classifier/router outputs as part of its review and checks whether each company's original `token_results`, Rule A token results, and Rule B token results have omissions, extra mappings, wrong project mapping, or non-fungible/stock ticker contamination.
 13. Main agent reviews the verifier report, fixes rows or marks manual review/rerun decisions.
 14. Collector or coordinator merges verified clean rows into `part5_analyse_company_to_token/agent_runs/crypto_company/results.csv`.
 15. Collector regenerates `part5_analyse_company_to_token/agent_runs/crypto_company/needs_manual_review.csv` from the merged final rows.
@@ -199,7 +199,7 @@ The classifier/router answers:
 - Is it likely connected to a crypto project that could have a fungible token?
 - What search tier should be used so the harness spends enough tokens to find likely tickers without wasting tokens on clearly out-of-scope companies?
 
-The classifier/router is a routing gate, not a final skip gate. It must not decide the final `token_ticker` value. It assigns a search budget and records why that budget is appropriate.
+The classifier/router is a routing gate, not a final skip gate. It must not decide the final `token_results` value. It assigns a search budget and records why that budget is appropriate.
 
 Classifier/router output artifact:
 
@@ -356,7 +356,7 @@ Full search policy:
 - Search depth should be proportional to classifier likelihood and ambiguity.
 - Do not close a row as skipped or no-token until former-name / alias / rebrand continuity has been checked.
 - If docs mention governance, staking, wrapper, liquid-staked, bridge, reward token, or tokenomics language, run a token-family sweep before closing the row.
-- If a token is supported only by secondary token pages, run one extra company/project linkage pass; if it remains secondary-only, keep `needs_manual_review = yes` or keep `token_ticker = []`.
+- If a token is supported only by secondary token pages, run one extra company/project linkage pass; if it remains secondary-only, keep `needs_manual_review = yes` or keep `token_results = []`.
 
 Light search policy:
 
@@ -377,7 +377,7 @@ Light query playbook:
 
 Light-tier requirements:
 
-- before finalizing `token_ticker = []`, run the exact-domain token probe
+- before finalizing `token_results = []`, run the exact-domain token probe
 - if any probe produces a plausible company -> project -> token signal, reroute to `full`
 - do not treat light search as a vague skim; it is a fixed low-cost probe sequence
 
@@ -390,8 +390,19 @@ Full query playbook:
 Full-tier requirements:
 
 - use at least one primary source for company identity, one for project identity, and one for token identity
-- before finalizing `token_ticker = []`, run the exact-domain token probe
+- before finalizing `token_results = []`, run the exact-domain token probe
 - a token page alone is not enough unless it maps back to the company or owned project
+
+Rule A / Rule B company-outward requirements:
+
+- After the original company-to-token mapping, evaluate whether the company maps to any token under Rule A and/or Rule B.
+- Rule A: include a token only when evidence shows the company directly created, co-created, led early core technical development, or was the official core engineering company responsible for launching the token's blockchain, protocol, or token system.
+- Exclude Rule A when the company only handled foundation governance, branding, ecosystem promotion, standardization, business development, commercial adoption, partnerships, ICO/token sale/voucher sale/fundraising/distribution, genesis allocation, investment, holding, incubation, wallet, DEX, staking, market making, or ordinary ecosystem participation.
+- Rule B: include a token when evidence shows the company is an officially recognized founding entity, co-founding entity, or original founding organization of the blockchain/protocol ecosystem.
+- Rule B may include an initial core technical/business development pool or genesis allocation group only when that status reflects an original founding role.
+- Exclude Rule B when the company is a later venture arm, later ecosystem fund, portfolio company, dApp, wallet, DEX, staking provider, incubator, investor, market maker, or ordinary ecosystem participant.
+- Rule A is stricter than Rule B. A company can be Rule B positive and Rule A negative.
+- Use `pending` for `include_rule_A` / `include_rule_B` only when migrating legacy rows before Rule A/B evaluation. New searched worker rows should output `yes` or `no`.
 
 Recommended source priority:
 
@@ -409,10 +420,10 @@ Do not use weak evidence alone:
 
 ## 6. Output Schema
 
-All worker and final result CSVs must use this exact v2 header:
+All worker and final result CSVs must use this exact v3 header:
 
 ```csv
-task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_ticker,token_name,token_url,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_results,token_decision_reason,include_rule_A,rule_A_token_results,rule_A_decision_reason,include_rule_B,rule_B_token_results,rule_B_decision_reason,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
 ```
 
 Column rules:
@@ -429,14 +440,25 @@ Column rules:
 - `project_url`: JSON list string
 - `status`: must be `completed`
 - `completed_at`: ISO timestamp when available; blank is allowed for worker output
-- `token_ticker`: JSON list string
-- `token_name`: JSON list string
-- `token_url`: JSON list string
+- `token_results`: JSON object-list string for original company-to-token mapping
+- `token_decision_reason`: short original mapping reason; required when `token_results = []`
+- `include_rule_A`: `yes`, `no`, or `pending`; `pending` is only for legacy rows not yet evaluated under Rule A
+- `rule_A_token_results`: JSON object-list string containing tokens that qualify under Rule A
+- `rule_A_decision_reason`: Rule A decision summary; required when `include_rule_A = no`
+- `include_rule_B`: `yes`, `no`, or `pending`; `pending` is only for legacy rows not yet evaluated under Rule B
+- `rule_B_token_results`: JSON object-list string containing tokens that qualify under Rule B
+- `rule_B_decision_reason`: Rule B decision summary; required when `include_rule_B = no`
 - `has_token_evidence`: short evidence summary
 - `evidence_urls`: `|`-separated absolute HTTP(S) URLs
 - `evidence_source_types`: `|`-separated lowercase source type labels
 - `confidence`: `high`, `medium`, or `low`
 - `needs_manual_review`: `yes` or `no`
+
+Each object in `token_results`, `rule_A_token_results`, and `rule_B_token_results` must use:
+
+```json
+{"token_symbol":"TOKEN","token_name":"Example Token","token_url":"https://example.com/token","reason":"short mapping reason","evidence_urls":["https://example.com"],"evidence_source_types":["official_site"]}
+```
 
 Confidence and review are separate decisions:
 
@@ -452,9 +474,8 @@ Confidence and review are separate decisions:
 
 No-token or skipped-search case:
 
-- `token_ticker = []`
-- `token_name = []`
-- `token_url = []`
+- `token_results = []`
+- `token_decision_reason` explains the no-token conclusion
 - `project_name` and `project_url` may be `[]`
 - `project_search_reason` must explain the final no-token decision: `full`/`light` search found no reliable token, or `skip_candidate` did not justify token search budget
 - for `skip_candidate` rows, `project_search_reason` should be derived from `classifier_results.csv` `classifier_reason`
@@ -463,8 +484,10 @@ Multi-project or multi-token case:
 
 - still one company row
 - put all project names in `project_name` as a JSON list string
-- put all tickers in `token_ticker` as a JSON list string, for example `["ANGLE","EURA","USDA"]`
-- list-valued columns should align by index whenever possible
+- put all original token mappings in `token_results` as a JSON object-list string
+- put all Rule A positive token mappings in `rule_A_token_results` as a JSON object-list string
+- put all Rule B positive token mappings in `rule_B_token_results` as a JSON object-list string
+- do not split symbol/name/reason/evidence across parallel list columns
 
 CSV safety:
 
@@ -479,6 +502,10 @@ Positive fungible token evidence requires at least one source that clearly maps:
 - company or owned project
 - to a crypto project
 - to a fungible token name and ticker
+
+Rule A positive evidence additionally requires a source that supports the company's direct creator, co-creator, early core technical developer, or official core engineering launch-company role.
+
+Rule B positive evidence additionally requires a source that supports the company's founding entity, co-founding entity, or original founding organization role.
 
 Good evidence includes:
 
@@ -521,7 +548,7 @@ Cases that usually should resolve to `needs_manual_review = no` after the resolu
 
 When no reliable source confirms a fungible token:
 
-- use `token_ticker = []`
+- use `token_results = []`
 - do not output `no`
 - do not output `unknown`
 
@@ -569,13 +596,17 @@ Fresh verifier rule:
 Verifier scope:
 
 - Re-check whether each company has zero, one, or multiple fungible token tickers.
+- Re-check whether each company has zero, one, or multiple Rule A qualifying tokens.
+- Re-check whether each company has zero, one, or multiple Rule B qualifying tokens.
 - Check whether classifier/router `search_tier` was too conservative for the row.
-- Detect missing tickers in `token_ticker`.
-- Detect extra or over-reported tickers in `token_ticker`.
+- Detect missing token mappings in `token_results`.
+- Detect extra or over-reported token mappings in `token_results`.
 - Detect wrong company-to-project mapping.
 - Detect cases where an NFT collection symbol, stock ticker, chain name, or product code was wrongly reported as a fungible token ticker.
+- Detect Rule A over-inclusion from foundation governance, branding, ecosystem promotion, business development, token sale/distribution, genesis allocation, investment, or ordinary ecosystem support.
+- Detect Rule B over-inclusion from later venture arms, later ecosystem funds, portfolio companies, dApps, wallets, DEXs, staking providers, incubators, investors, market makers, or ordinary ecosystem participants.
 - Detect skipped-search rows where project/token search should have been required.
-- Detect rows where multiple projects or multiple token tickers should have been represented as a JSON list.
+- Detect rows where multiple projects or multiple token mappings should have been represented as JSON lists.
 
 Verifier search policy:
 
@@ -594,15 +625,22 @@ Do not create a new top-level run folder for every round. Reuse one working runs
 `verification_report.csv` should include:
 
 ```csv
-task_index,company_id,company_name,classifier_search_tier,worker_token_ticker,verifier_search_tier,verifier_token_ticker,verdict,error_type,error_reason,evidence_urls,recommended_action,corrected_result_row_json
+task_index,company_id,company_name,classifier_search_tier,worker_token_results,verifier_search_tier,verifier_token_results,worker_rule_A_token_results,verifier_rule_A_token_results,worker_rule_B_token_results,verifier_rule_B_token_results,verdict,error_type,error_reason,evidence_urls,recommended_action,corrected_result_row_json
 ```
 
 Allowed `verdict` values:
 
 - `pass`
-- `suspected_missing_token`
-- `suspected_extra_token`
-- `wrong_project_mapping`
+- `missing_original_token`
+- `extra_original_token`
+- `wrong_original_token_mapping`
+- `missing_rule_A_token`
+- `extra_rule_A_token`
+- `wrong_rule_A_classification`
+- `missing_rule_B_token`
+- `extra_rule_B_token`
+- `wrong_rule_B_classification`
+- `invalid_token_result_json`
 - `non_fungible_or_stock_ticker`
 - `search_tier_too_conservative`
 - `search_should_not_have_been_skipped`
@@ -761,16 +799,18 @@ Structural checks:
 - no duplicate `task_index`
 - task indexes are continuous for the completed range
 - every list-valued column parses as JSON list
+- every `*_token_results` item is a JSON object with `token_symbol`, `token_name`, `token_url`, `reason`, `evidence_urls`, and `evidence_source_types`
 - `status = completed`
 - `company_type` uses the allowed values
 - `crypto_project_likelihood` uses the allowed values
 - `project_search_required` in `yes|no`
 - `confidence` in `high|medium|low`
 - `needs_manual_review` in `yes|no`
+- `include_rule_A` and `include_rule_B` in `yes|no|pending`; `pending` is allowed only for legacy rows awaiting Rule A/B evaluation
 
 Evidence checks:
 
-- if `token_ticker != []`, then `token_url` or `evidence_urls` must be non-empty
+- if `token_results != []`, then row-level `evidence_urls` must be non-empty
 - `evidence_source_types` must identify the source categories used
 - `has_token_evidence` must be non-empty for every row
 - searched rows must have non-empty `evidence_urls` and `evidence_source_types`
@@ -778,8 +818,10 @@ Evidence checks:
 - `evidence_urls` must contain only absolute HTTP(S) URLs separated by `|`
 - `evidence_source_types` must use lowercase underscore labels separated by `|`
 - token-positive rows must have evidence that maps company/project to token
+- Rule A positive rows must have non-empty `rule_A_token_results`; every object must include reason and evidence URLs
+- Rule B positive rows must have non-empty `rule_B_token_results`; every object must include reason and evidence URLs
 - stock ticker must not be used as crypto token evidence
-- list-valued token fields should align by index where possible
+- token result fields must not be represented as parallel index-aligned lists
 - `project_search_required = no` rows must have a non-empty `project_search_reason`
 
 Classifier checks:
@@ -810,7 +852,7 @@ Quality checks:
 
 - all `needs_manual_review = yes` rows go to `needs_manual_review.csv`
 - sample token-positive rows
-- sample `token_ticker = []` rows
+- sample `token_results = []` rows
 - review all rows where company name and project/token name differ materially
 - review all rows where project search was skipped
 - review all verifier non-`pass` rows
@@ -832,7 +874,7 @@ After each completed scope, before checkpoint update or terminal closure:
 11. Confirm JSON list parse failures are zero, row counts are correct, and there are no duplicate task indexes.
 12. Run verifier / collector resolution for the completed scope, then resolve every non-`pass` finding by edit, rerun, or manual review before those rows remain in final outputs.
 13. Spot-check a sample of token-positive rows.
-14. Spot-check a sample of `token_ticker = []` rows.
+14. Spot-check a sample of `token_results = []` rows.
 15. Spot-check skipped-search rows.
 16. Update checkpoint only after verification is complete.
 17. Remove temporary run directories only after verification is complete.
@@ -842,7 +884,7 @@ Suggested sample checks:
 - 100% of manual review rows
 - 10% of token-positive rows per block
 - 5% of `project_search_required = no` rows per block
-- 2% of `token_ticker = []` rows per block
+- 2% of `token_results = []` rows per block
 - all rows with multiple token tickers
 - all rows where `confidence = high` but evidence is only secondary sources
 - 100% of verifier non-`pass` rows

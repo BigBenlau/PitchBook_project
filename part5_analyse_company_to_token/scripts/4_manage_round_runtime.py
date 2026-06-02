@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from part5_schedule_io import write_schedule_csv
+from result_schema import RESULT_CSV_COLUMNS
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PART5_DIR = SCRIPT_DIR.parent
@@ -19,29 +20,6 @@ RUNTIME_DIR = PART5_DIR / "runtime"
 DEFAULT_RUNS_DIR = PART5_DIR / "agent_runs" / "crypto_company_parallel"
 DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
 WORKER_BASE_TEMPLATE_PATH = RUNTIME_DIR / "worker_base_template.md"
-
-RESULT_CSV_COLUMNS = [
-    "task_index",
-    "company_id",
-    "company_name",
-    "normalized_domain",
-    "company_type",
-    "crypto_project_likelihood",
-    "project_search_required",
-    "project_search_reason",
-    "project_name",
-    "project_url",
-    "status",
-    "completed_at",
-    "token_ticker",
-    "token_name",
-    "token_url",
-    "has_token_evidence",
-    "evidence_urls",
-    "evidence_source_types",
-    "confidence",
-    "needs_manual_review",
-]
 
 CLASSIFIER_CSV_COLUMNS = [
     "task_index",
@@ -822,7 +800,7 @@ def render_worker_base_instructions(row: dict[str, str], tasks: list[dict[str, A
             "- This rerun window exists to guarantee actual search coverage. Do not use `search_tier = skip_candidate` in this rerun batch.\n"
             "- Every company in this batch must receive at least `light` search, so `project_search_required` must be `yes` for every company.\n"
             "- A no-token conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
-            "- Do not close a row as no-token only from company-type heuristics; perform the bounded or full search first, then conclude `token_ticker = []` if appropriate.\n"
+            "- Do not close a row as no-token only from company-type heuristics; perform the bounded or full search first, then conclude `token_results = []` if appropriate.\n"
         )
     return rendered
 
