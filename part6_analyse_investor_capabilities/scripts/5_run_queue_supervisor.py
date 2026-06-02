@@ -1003,26 +1003,35 @@ def gather_launch_rows(
     registry: list[dict[str, Any]],
     runs_dir: Path,
     events_log: Path,
+    max_workers: int,
 ) -> list[dict[str, str]]:
+    process_budget = max(0, max_workers - live_worker_process_count(registry))
+    if process_budget <= 0:
+        return []
+
     allow_tail_retry = tail_retry_launch_allowed(schedule_rows, target_rounds)
+    candidate_rows: list[dict[str, str]] = []
+    for row in target_scope_rows(schedule_rows, target_rounds):
+        if row_is_actively_running(row, registry):
+            continue
+        if effective_status(row) not in {"prepared", "needs_rerun"}:
+            continue
+        if row_tail_retry_pending(row) and not allow_tail_retry:
+            continue
+        candidate_rows.append(row)
+
+    candidate_rows.sort(key=row_sort_key)
+    selected_rows = candidate_rows[:process_budget]
+
+    batch_files_by_round: dict[int, list[str]] = {}
+    for row in selected_rows:
+        round_index = ROUND.parse_int(row.get("round_index"), 0)
+        batch_file = str(row.get("batch_file") or "")
+        if round_index > 0 and batch_file:
+            batch_files_by_round.setdefault(round_index, []).append(batch_file)
+
     launch_rows: list[dict[str, str]] = []
-    for round_index in target_rounds:
-        round_rows = ROUND.round_rows(schedule_rows, round_index)
-        if not round_rows:
-            continue
-        batch_scope = {
-            str(row.get("batch_file") or "")
-            for row in round_rows
-            if (
-                row_is_actively_running(row, registry)
-                or (
-                    effective_status(row) in {"prepared", "needs_rerun"}
-                    and (allow_tail_retry or not row_tail_retry_pending(row))
-                )
-            )
-        }
-        if not batch_scope:
-            continue
+    for round_index, batch_scope in sorted(batch_files_by_round.items()):
         launch_rows.extend(
             run_prepare_for_batches(
                 round_index,
@@ -1031,7 +1040,6 @@ def gather_launch_rows(
                 events_log=events_log,
             )
         )
-        schedule_rows = ROUND.read_schedule(runs_dir / ROUND.DEFAULT_SCHEDULE_CSV)
     return launch_rows
 
 
@@ -1319,6 +1327,7 @@ def main() -> None:
             registry=registry,
             runs_dir=runs_dir,
             events_log=events_log,
+            max_workers=args.max_workers,
         )
         schedule_rows = refresh_schedule(
             schedule_csv,
@@ -1439,6 +1448,7 @@ def main() -> None:
             registry=registry,
             runs_dir=runs_dir,
             events_log=events_log,
+            max_workers=args.max_workers,
         )
         schedule_rows = refresh_schedule(
             schedule_csv,

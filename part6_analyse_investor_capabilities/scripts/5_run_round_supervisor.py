@@ -45,6 +45,7 @@ DEFAULT_BATCH_TIMEOUT_SECONDS = 7200
 DEFAULT_SPLIT_BATCH_RESPAWN_THRESHOLD = 5
 DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 3
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
+DEFAULT_WORKER_SANDBOX = "danger-full-access"
 DEFAULT_SPLIT_SHARD_SIZE = 15
 DEFAULT_SPLIT_SHARD_COUNT = 2
 SPLIT_BATCH_LAUNCH_REASON = "split_batch_2x15"
@@ -765,6 +766,20 @@ def process_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    try:
+        waited_pid, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        waited_pid = 0
+    except OSError:
+        waited_pid = 0
+    if waited_pid == pid:
+        return False
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="ignore")
+        if ") Z " in stat_text:
+            return False
+    except OSError:
+        pass
     return True
 
 
@@ -1105,7 +1120,7 @@ def spawn_worker(
         "-m",
         launch_row.get("model") or "gpt-5.4-mini",
         "-s",
-        "workspace-write",
+        DEFAULT_WORKER_SANDBOX,
         "--json",
         "-o",
         str(final_message_path),
@@ -1357,17 +1372,17 @@ def inspect_attempt_outputs(
 
 
 def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[str, Any]:
-    token_rows = 0
-    searched_no_token_rows = 0
+    capability_rows = 0
+    searched_no_capability_rows = 0
     skip_candidate_rows = 0
     manual_review_rows = 0
     for row in rows:
-        token_values = parse_json_list(row.get("capability_labels", ""))
-        if token_values:
-            token_rows += 1
+        capability_values = parse_json_list(row.get("capability_labels", ""))
+        if capability_values:
+            capability_rows += 1
         else:
             if (row.get("capability_search_required") or "").strip() == "yes":
-                searched_no_token_rows += 1
+                searched_no_capability_rows += 1
             else:
                 skip_candidate_rows += 1
         if (row.get("needs_manual_review") or "").strip() == "yes":
@@ -1375,21 +1390,21 @@ def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[s
     summary = {
         "task_count": task_count,
         "rows_written": len(rows),
-        "rows_with_ticker": token_rows,
-        "rows_without_ticker": max(0, len(rows) - token_rows),
-        "searched_no_token_rows": searched_no_token_rows,
+        "rows_with_capability_labels": capability_rows,
+        "rows_without_capability_labels": max(0, len(rows) - capability_rows),
+        "searched_no_capability_rows": searched_no_capability_rows,
         "skip_candidate_rows": skip_candidate_rows,
         "manual_review_rows": manual_review_rows,
         "search_complete": len(rows) == task_count,
     }
     if len(rows) < task_count:
         summary["completion_reason"] = "interrupted_incomplete"
-    elif token_rows > 0:
-        summary["completion_reason"] = "completed_with_tokens_found"
-    elif searched_no_token_rows == task_count:
-        summary["completion_reason"] = "all_companies_searched_no_token"
+    elif capability_rows > 0:
+        summary["completion_reason"] = "completed_with_capability_labels"
+    elif searched_no_capability_rows == task_count:
+        summary["completion_reason"] = "all_investors_searched_no_capability"
     else:
-        summary["completion_reason"] = "all_rows_resolved_zero_ticker_mixed_skip_and_search"
+        summary["completion_reason"] = "all_rows_resolved_zero_capability_mixed_skip_and_search"
     return summary
 
 
@@ -1443,10 +1458,10 @@ def render_split_worker_instruction(
     if split_requires_search_guarantee(row):
         search_guarantee_note = (
             "- Search guarantee mode is active for this shard.\n"
-            "- Every company in this shard must be searched before you conclude that no fungible token ticker exists.\n"
+            "- Every investor in this shard must be searched before you conclude that no operating capability label applies.\n"
             "- Do not use `search_tier = skip_candidate` in classifier output for this shard.\n"
-            "- Set `capability_search_required = yes` for every company in this shard.\n"
-            "- If a company appears non-tokenized after best-effort research, keep `capability_labels = []` but still include real evidence URLs and source types.\n"
+            "- Set `capability_search_required = yes` for every investor in this shard.\n"
+            "- If an investor has no supported capability labels after best-effort research, keep `capability_labels = []` but still include real evidence URLs and source types.\n"
             "- Do not use `needs_manual_review = yes` as a substitute for skipping search.\n"
         )
     else:
@@ -1462,12 +1477,12 @@ def render_split_worker_instruction(
         f"- authoritative shard classifier CSV: {classifier_path}\n"
         f"- authoritative shard results CSV: {results_path}\n"
         f"- shard task_count: {len(shard_tasks)}\n"
-        f"- shard first task_index/company: {first_task_index} / {first_company}\n"
-        f"- shard last task_index/company: {last_task_index} / {last_company}\n"
+        f"- shard first task_index/investor: {first_task_index} / {first_company}\n"
+        f"- shard last task_index/investor: {last_task_index} / {last_company}\n"
         "- This worker owns exactly this shard and must not write sibling shard files or the parent attempt CSVs directly.\n"
         f"{prefix_note}"
         f"{search_guarantee_note}"
-        "- If a company truly has no supported fungible token ticker after best-effort search, keep `capability_labels = []` but still provide real evidence and keep the row schema-valid.\n"
+        "- If an investor truly has no supported capability labels after best-effort search, keep `capability_labels = []` but still provide real evidence and keep the row schema-valid.\n"
         "- Do not fabricate placeholder manual-review rows just to close the shard.\n"
         "- Finish the assigned shard, write rows incrementally, then exit.\n\n"
         f"{base_instruction_text.rstrip()}\n"
@@ -1834,8 +1849,8 @@ def merge_split_outputs(
             f"Split batch recovery merged successfully.\n"
             f"mode: {summary['mode']}\n"
             f"rows_written: {summary['rows_written']}/{summary['task_count']}\n"
-            f"rows_with_ticker: {summary['rows_with_ticker']}\n"
-            f"searched_no_token_rows: {summary['searched_no_token_rows']}\n"
+            f"rows_with_capability_labels: {summary['rows_with_capability_labels']}\n"
+            f"searched_no_capability_rows: {summary['searched_no_capability_rows']}\n"
             f"skip_candidate_rows: {summary['skip_candidate_rows']}\n"
             f"manual_review_rows: {summary['manual_review_rows']}\n"
             f"completion_reason: {summary['completion_reason']}\n"
@@ -1853,8 +1868,8 @@ def merge_split_outputs(
             "[split_batch:merge] "
             f"round={row.get('round_index', '')} slot={row.get('worker_slot', '')} "
             f"batch={row.get('batch_file', '')} attempt={row.get('attempt_index', '')} "
-            f"rows_with_ticker={summary['rows_with_ticker']} "
-            f"searched_no_token_rows={summary['searched_no_token_rows']} "
+            f"rows_with_capability_labels={summary['rows_with_capability_labels']} "
+            f"searched_no_capability_rows={summary['searched_no_capability_rows']} "
             f"skip_candidate_rows={summary['skip_candidate_rows']} "
             f"completion_reason={summary['completion_reason']}"
         ),

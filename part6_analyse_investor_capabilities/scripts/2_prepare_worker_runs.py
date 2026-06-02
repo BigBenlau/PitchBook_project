@@ -18,7 +18,7 @@ RUNTIME_DIR = PART6_DIR / "runtime"
 WORKER_BASE_TEMPLATE_PATH = RUNTIME_DIR / "worker_base_template.md"
 DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
 
-DEFAULT_BATCH_DIR = PART6_DIR / "agent_task_batches" / "crypto_investor"
+DEFAULT_BATCH_DIR = REPO_ROOT / "part5_to_part6" / "output" / "part6_batches"
 DEFAULT_RUNS_DIR = PART6_DIR / "agent_runs" / "crypto_investor_parallel"
 DEFAULT_WORKERS = 5
 
@@ -82,7 +82,7 @@ SCHEDULE_COLUMNS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare 5-worker Codex run directories from part6 investor batch JSONL files.",
+        description="Prepare 5-worker Codex run directories from Part5-to-Part6 investor batch JSONL files.",
     )
     parser.add_argument(
         "--batch-dir",
@@ -265,7 +265,7 @@ def build_initial_attempt_instructions(
         "- Own the entire batch in this single fresh worker and continue until the batch is complete or an explicit blocker is reached.\n"
         "- Do not proactively hand off or segment the batch in this normal mode.\n"
         "- Recovery-only segment settings exist for later reruns, but they do not apply to this initial full-batch attempt.\n"
-        "- Write incrementally. Append rows as soon as each company is completed.\n"
+        "- Write incrementally. Append rows as soon as each investor is completed.\n"
         "- The harness watches startup no-row and partial-stall conditions. Lack of row growth may cause this attempt to be terminated.\n\n"
         "--- BEGIN BASE INSTRUCTIONS ---\n\n"
         f"{base_instruction_text.rstrip()}\n\n"
@@ -315,9 +315,9 @@ def render_worker_base_instructions(
             f"{rendered.rstrip()}\n\n"
             "Search-guarantee override for previously manual-fallback batches:\n"
             "- This rerun window exists to guarantee actual search coverage. Do not use `search_tier = skip_candidate` in this rerun batch.\n"
-            "- Every company in this batch must receive at least `light` search, so `capability_search_required` must be `yes` for every company.\n"
-            "- A no-token conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
-            "- Do not close a row as no-token only from company-type heuristics; perform the bounded or full search first, then conclude `capability_labels = []` if appropriate.\n"
+            "- Every investor in this batch must receive at least `light` search, so `capability_search_required` must be `yes` for every investor.\n"
+            "- A no-capability conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
+            "- Do not close a row as no-capability only from investor-type heuristics; perform the bounded or full search first, then conclude `capability_labels = []` if appropriate.\n"
         )
     return rendered
 
@@ -430,8 +430,8 @@ Authoritative correction rule:
 - checked row count
 - pass count
 - non-pass count
-- suspected missing token count
-- suspected extra token count
+- suspected missing capability count
+- suspected extra capability count
 - wrong mapping count
 - skipped-search concern count
 - systematic causes found
@@ -608,8 +608,8 @@ def prepare_round_verification(
                     "- checked row count:",
                     "- pass count:",
                     "- non-pass count:",
-                    "- suspected missing token count:",
-                    "- suspected extra token count:",
+                    "- suspected missing capability count:",
+                    "- suspected extra capability count:",
                     "- wrong mapping count:",
                     "- skipped-search concern count:",
                     "- systematic causes found:",

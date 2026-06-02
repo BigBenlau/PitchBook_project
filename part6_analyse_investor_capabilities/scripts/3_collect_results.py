@@ -36,7 +36,7 @@ REPO_ROOT = PART6_DIR.parent
 
 DEFAULT_RUNS_DIR = PART6_DIR / "agent_runs" / "crypto_investor_parallel"
 DEFAULT_FINAL_DIR = PART6_DIR / "agent_runs" / "crypto_investor"
-DEFAULT_BATCH_DIR = PART6_DIR / "agent_task_batches" / "crypto_investor"
+DEFAULT_BATCH_DIR = REPO_ROOT / "part5_to_part6" / "output" / "part6_batches"
 DEFAULT_RUNTIME_POLICY_JSON = PART6_DIR / "runtime" / "policy.json"
 AUTO_RERUN_BATCHES_CSV = "lint_rerun_batches.csv"
 AUTO_RERUN_BATCHES_MD = "lint_rerun_batches.md"
@@ -431,7 +431,7 @@ def record_identity_override(
         by_source[source_key] = int(by_source.get(source_key, 0)) + 1
     if isinstance(samples, list) and len(samples) < 10:
         samples.append(
-            f"{source}: task_index={task_index} company={investor_name}: "
+            f"{source}: task_index={task_index} investor={investor_name}: "
             + "; ".join(changes)
         )
 
@@ -1267,8 +1267,8 @@ def validate_row_order_against_tasks(
             actual_investor_name = (row.get("investor_name") or "").strip()
             validation_errors.append(
                 f"{results_csv}: row {index + 2}: expected "
-                f"task_index={expected_task_index} company={expected_investor_name!r}, found "
-                f"task_index={actual_task_index} company={actual_investor_name!r}"
+                f"task_index={expected_task_index} investor={expected_investor_name!r}, found "
+                f"task_index={actual_task_index} investor={actual_investor_name!r}"
             )
     return validation_errors
 

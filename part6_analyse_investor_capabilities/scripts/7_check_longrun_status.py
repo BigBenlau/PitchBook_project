@@ -25,7 +25,7 @@ SYSTEMD_RUNNING_STATES = {"active", "activating", "reloading"}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Read the latest long-running crypto-company supervisor metadata and report "
+            "Read the latest long-running crypto-investor supervisor metadata and report "
             "whether the job is still running, which round it is on, and the current "
             "batch / worker progress."
         )
@@ -411,6 +411,9 @@ def derive_job_status(
         age_seconds = (now - heartbeat_at).total_seconds()
         if age_seconds <= heartbeat_grace_seconds:
             heartbeat_source = str((heartbeat or {}).get("source") or "")
+            job_mode = str((latest_job or {}).get("mode") or "").strip()
+            if job_mode == "foreground":
+                return "running"
             if not alive_workers and not host_process_lines and heartbeat_source.startswith("worker_log:"):
                 return "orphaned_worker_activity"
             return "running"

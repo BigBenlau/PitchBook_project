@@ -21,7 +21,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PART6_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART6_DIR.parent
 
-DEFAULT_BATCH_DIR = PART6_DIR / "agent_task_batches" / "crypto_investor"
+DEFAULT_BATCH_DIR = REPO_ROOT / "part5_to_part6" / "output" / "part6_batches"
 DEFAULT_RUNS_PARENT_DIR = PART6_DIR / "agent_runs"
 DEFAULT_FINAL_RESULTS_CSV = PART6_DIR / "agent_runs" / "crypto_investor" / "results.csv"
 DEFAULT_RUN_PREFIX = "crypto_investor_parallel_eval"
@@ -56,7 +56,7 @@ class BatchMeta:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Prepare the next missing crypto-company batch window and launch the round "
+            "Prepare the next missing crypto-investor batch window and launch the round "
             "supervisor as a detached long-running process. Detached mode prefers "
             "systemd-run --user and falls back to nohup plus a new session."
         )
@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scheduler-mode",
         choices=["round", "queue"],
-        default="round",
+        default="queue",
         help="Execution scheduler. `round` preserves the old round barrier; `queue` keeps slots full and collects completed batches independently.",
     )
     parser.add_argument("--start-batch", type=int, default=None)
@@ -372,7 +372,7 @@ def build_supervisor_command(
 
 def build_systemd_unit_name(*, timestamp: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_.@-]+", "-", timestamp).lower()
-    return f"crypto-company-longrun-{normalized}"
+    return f"crypto-investor-longrun-{normalized}"
 
 
 def write_json(path: Path, payload: dict[str, object]) -> None:

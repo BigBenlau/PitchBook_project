@@ -785,9 +785,9 @@ def render_worker_base_instructions(row: dict[str, str], tasks: list[dict[str, A
             f"{rendered.rstrip()}\n\n"
             "Search-guarantee override for previously manual-fallback batches:\n"
             "- This rerun window exists to guarantee actual search coverage. Do not use `search_tier = skip_candidate` in this rerun batch.\n"
-            "- Every company in this batch must receive at least `light` search, so `capability_search_required` must be `yes` for every company.\n"
-            "- A no-token conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
-            "- Do not close a row as no-token only from company-type heuristics; perform the bounded or full search first, then conclude `capability_labels = []` if appropriate.\n"
+            "- Every investor in this batch must receive at least `light` search, so `capability_search_required` must be `yes` for every investor.\n"
+            "- A no-capability conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
+            "- Do not close a row as no-capability only from investor-type heuristics; perform the bounded or full search first, then conclude `capability_labels = []` if appropriate.\n"
         )
     return rendered
 
@@ -841,12 +841,12 @@ def render_attempt_instruction(
             "- Do not duplicate or rewrite the preserved prefix rows. Append only the remaining rows in order.\n"
         )
         startup_priority = (
-            f"- Startup priority: complete task_index {next_task_index} ({next_company}) first and append both CSV rows before any broad historical lookup or multi-company search fan-out.\n"
+            f"- Startup priority: complete task_index {next_task_index} ({next_company}) first and append both CSV rows before any broad historical lookup or multi-investor search fan-out.\n"
         )
     else:
         prefix_note = "- Start from the first task and write rows in order.\n"
         startup_priority = (
-            f"- Startup priority: complete task_index {next_task_index} ({next_company}) first and append both CSV rows before any broad historical lookup or multi-company search fan-out.\n"
+            f"- Startup priority: complete task_index {next_task_index} ({next_company}) first and append both CSV rows before any broad historical lookup or multi-investor search fan-out.\n"
         )
     if uses_segment_contract:
         ownership_note = (
@@ -856,9 +856,9 @@ def render_attempt_instruction(
             f"- active lease file: {active_lease_file}\n"
             f"- preferred handoff after about {segment_target_rows} new rows in this attempt.\n"
             f"- hard cap for new rows in this attempt: {segment_hard_cap_rows}.\n"
-            f"- If you reach the hard cap before the batch is complete, stop and hand off after finishing the current company's writes.\n"
+            f"- If you reach the hard cap before the batch is complete, stop and hand off after finishing the current investor's writes.\n"
             f"- The intended recovery segment end is task_index {segment_end_task_index} ({segment_end_company}) unless the batch completes earlier.\n"
-            "- Before starting each new company, re-read the active lease file. If its `lease_id` no longer matches this wrapper, stop instead of writing more rows.\n"
+            "- Before starting each new investor, re-read the active lease file. If its `lease_id` no longer matches this wrapper, stop instead of writing more rows.\n"
         )
     elif attempt_mode == "continue_from_prefix":
         ownership_note = (
@@ -867,7 +867,7 @@ def render_attempt_instruction(
             f"- active lease file: {active_lease_file}\n"
             "- Own the remaining suffix in this single fresh worker and continue until the batch is complete or an explicit blocker is reached.\n"
             "- Do not proactively hand off after an arbitrary row cap in this mode.\n"
-            "- Do not poll the lease file before every company in this normal recovery mode; the main agent should terminate stale workers directly when replacing them.\n"
+            "- Do not poll the lease file before every investor in this normal recovery mode; the main agent should terminate stale workers directly when replacing them.\n"
         )
     else:
         ownership_note = (
@@ -876,7 +876,7 @@ def render_attempt_instruction(
             f"- active lease file: {active_lease_file}\n"
             "- Own the entire batch in this single fresh worker and continue until the batch is complete or an explicit blocker is reached.\n"
             "- Do not proactively segment or hand off mid-batch in this mode.\n"
-            "- Do not poll the lease file before every company in this normal full-batch mode; the main agent should terminate stale workers directly when replacing them.\n"
+            "- Do not poll the lease file before every investor in this normal full-batch mode; the main agent should terminate stale workers directly when replacing them.\n"
         )
 
     return (
@@ -892,9 +892,9 @@ def render_attempt_instruction(
         f"{prefix_note}"
         f"{startup_priority}"
         f"{ownership_note}"
-        "- Write incrementally. Append rows as soon as each company is completed.\n"
-        "- Before the first completed company is written, do not scan `manifest.csv`, prior `verification_findings.csv`, prior final outputs, or unrelated batch directories.\n"
-        "- Before 2 completed companies are written, keep auxiliary lookups narrowly scoped to the current company unless a specific ambiguity requires more.\n"
+        "- Write incrementally. Append rows as soon as each investor is completed.\n"
+        "- Before the first completed investor is written, do not scan `manifest.csv`, prior `verification_findings.csv`, prior final outputs, or unrelated batch directories.\n"
+        "- Before 2 completed investors are written, keep auxiliary lookups narrowly scoped to the current investor unless a specific ambiguity requires more.\n"
         "- The harness watches startup no-row and partial-stall conditions. Lack of row growth may cause this attempt to be terminated.\n\n"
         f"{WRAPPER_BEGIN}\n\n"
         f"{base_instruction_text.rstrip()}\n\n"
@@ -1245,7 +1245,7 @@ def build_spawn_prompt(row: dict[str, str], model: str, reasoning: str, launch_r
         f"Recovery segment target rows: {row.get('segment_target_rows', '')}. Recovery hard cap rows: {row.get('segment_hard_cap_rows', '')}.\n"
         "Startup requirement:\n"
         "- Read only the batch-specific instructions and inputs first.\n"
-        "- Complete the earliest pending company and write the first classifier/result rows early.\n"
+        "- Complete the earliest pending investor and write the first classifier/result rows early.\n"
         "- Do not begin with repo-wide scans, `manifest.csv` sweeps, `verification_findings.csv` lookups, or broad exploration of unrelated batches.\n"
         f"{ownership_note}"
         f"Read the worker instructions:\n{resolve_path(row['instructions_file'])}\n\n"

@@ -13,10 +13,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PART6_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART6_DIR.parent
 
-DEFAULT_INPUT_CSV = REPO_ROOT / "part2_build_crypto_candidate" / "output" / "crypto_investor.csv"
-DEFAULT_OUTPUT_DIR = PART6_DIR / "agent_task_batches" / "crypto_investor"
+DEFAULT_INPUT_CSV = REPO_ROOT / "part5_to_part6" / "output" / "part6_investor_input.csv"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "part5_to_part6" / "output" / "part6_batches"
 DEFAULT_BATCH_SIZE = 30
-DEFAULT_SEARCH_POLICY = "local_first_then_web_search_with_primary_source_priority"
+DEFAULT_SEARCH_POLICY = "part5_token_company_investor_graph_then_web_search_with_primary_source_priority"
 DEFAULT_TASK_SCOPE = "investor_router|capability_classification"
 
 INPUT_COLUMNS = [
@@ -51,7 +51,7 @@ INPUT_COLUMNS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build investor capability task batches from crypto_investor.csv.",
+        description="Build investor capability task batches from the Part5-to-Part6 investor input CSV.",
     )
     parser.add_argument("--input-csv", type=Path, default=DEFAULT_INPUT_CSV)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -187,8 +187,8 @@ def build_input_row(
         "MatchedKeywords": normalize_text(source_row.get("MatchedKeywords", "")),
         "MatchedColumns": normalize_text(source_row.get("MatchedColumns", "")),
         "InvestorCapabilityContext": build_context(source_row, context_max_chars),
-        "SearchPolicy": DEFAULT_SEARCH_POLICY,
-        "AgentTaskScope": DEFAULT_TASK_SCOPE,
+        "SearchPolicy": normalize_text(source_row.get("SearchPolicy", "")) or DEFAULT_SEARCH_POLICY,
+        "AgentTaskScope": normalize_text(source_row.get("AgentTaskScope", "")) or DEFAULT_TASK_SCOPE,
     }
     return {column: output.get(column, "") for column in INPUT_COLUMNS}
 
