@@ -582,7 +582,10 @@ def mark_long_tail_deferred(
         updated["deferred_at"] = str(deferred.get("deferred_at") or iso_now())
         updated["deferred_reason"] = str(deferred.get("reason") or "batch_timeout_exceeded")
         split_state = load_json_dict(split_state_path_for_row(updated))
-        if split_state_active(split_state):
+        if (
+            split_state_active(split_state)
+            or str(split_state.get("state") or "").strip() == "startup_no_row_exhausted"
+        ):
             split_state["state"] = "deferred_long_tail"
             split_state["deferred_at"] = updated["deferred_at"]
             write_json_dict(split_state_path_for_row(updated), split_state)
@@ -989,9 +992,7 @@ def mark_dead_worker_reruns(
 
         batch_file = str(updated.get("batch_file") or "")
         attempt_index = parse_int(updated.get("attempt_index"), 0)
-        if active_full_batch_pid(registry, batch_file=batch_file, attempt_index=attempt_index):
-            updated_rows.append(updated)
-            continue
+        active_pid = active_full_batch_pid(registry, batch_file=batch_file, attempt_index=attempt_index)
 
         tasks_path = resolve_repo_path(str(updated.get("tasks_file") or ""))
         classifier_path = resolve_repo_path(str(updated.get("classifier_results_csv") or ""))
@@ -1020,7 +1021,13 @@ def mark_dead_worker_reruns(
                     f"classifier_rows={inspection['classifier_rows']} result_rows={inspection['result_rows']}"
                 ),
             )
+            if active_pid:
+                terminate_pid(active_pid, events_log, "completed_outputs_reconciled")
             changed = True
+            updated_rows.append(updated)
+            continue
+
+        if active_pid:
             updated_rows.append(updated)
             continue
 
@@ -1249,6 +1256,12 @@ def select_split_recovery_candidates(
         status = (row.get("status") or "").strip()
         if status not in {"running", "needs_rerun"}:
             continue
+        if (
+            str(row.get("tail_retry_pending") or "").strip().lower() == "yes"
+            or str(row.get("queue_state") or "").strip() == "tail_retry_pending"
+            or parse_int(row.get("tail_retry_count"), 0) > 0
+        ):
+            continue
         split_state = load_json_dict(split_state_path_for_row(row))
         if split_state_active(split_state) or batch_has_any_active_split(row):
             continue
@@ -1275,25 +1288,36 @@ def mark_split_recovery_requested(
     batch_files = {str(row.get("batch_file") or "") for row in selected_rows}
     updated_rows: list[dict[str, str]] = []
     now_iso = iso_now()
+    changed = False
     for row in schedule_rows:
         updated = dict(row)
         if str(updated.get("batch_file") or "") in batch_files:
+            was_already_requested = (
+                str(updated.get("prepared_reason") or "") == SPLIT_BATCH_LAUNCH_REASON
+                and str(updated.get("prepared_mode") or "") == "fresh_restart"
+                and str(updated.get("status") or "") == "needs_rerun"
+            )
             updated["status"] = "needs_rerun"
             updated["prepared_mode"] = "fresh_restart"
             updated["prepared_reason"] = SPLIT_BATCH_LAUNCH_REASON
             updated["planned_rotate"] = ""
             updated["last_rerun_reason"] = SPLIT_BATCH_LAUNCH_REASON
-            updated["last_rerun_at"] = now_iso
-            log_event(
-                events_log,
-                (
-                    "[split_batch:request] "
-                    f"round={updated.get('round_index', '')} slot={updated.get('worker_slot', '')} "
-                    f"batch={updated.get('batch_file', '')} attempt={updated.get('attempt_index', '')}"
-                ),
-            )
+            if not was_already_requested:
+                updated["last_rerun_at"] = now_iso
+            if not was_already_requested:
+                log_event(
+                    events_log,
+                    (
+                        "[split_batch:request] "
+                        f"round={updated.get('round_index', '')} slot={updated.get('worker_slot', '')} "
+                        f"batch={updated.get('batch_file', '')} attempt={updated.get('attempt_index', '')}"
+                    ),
+                )
+        if updated != row:
+            changed = True
         updated_rows.append(updated)
-    write_schedule(schedule_csv, updated_rows)
+    if changed:
+        write_schedule(schedule_csv, updated_rows)
     return updated_rows
 
 
