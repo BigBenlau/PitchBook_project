@@ -95,6 +95,21 @@ def read_events_tail(path: Path, tail: int) -> list[str]:
     return lines[-tail:]
 
 
+def parse_int(value: object, default: int = 0) -> int:
+    try:
+        return int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_batch_number(batch_file: str) -> int:
+    stem = Path(batch_file).stem
+    try:
+        return int(stem.split("_", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
 def collect_host_process_lines(runs_dir: Path | None) -> dict[str, object]:
     try:
         completed = subprocess.run(
@@ -236,6 +251,195 @@ def row_has_open_queue_work(row: dict[str, str]) -> bool:
     if status == "completed" and str(row.get("collect_state") or "").strip() == "done":
         return False
     return True
+
+
+def build_backlog_summary(schedule_rows: list[dict[str, str]], scheduler_mode: str) -> dict[str, object]:
+    waiting_rows: list[dict[str, str]] = []
+    tail_retry_rows: list[dict[str, str]] = []
+    collect_rows: list[dict[str, str]] = []
+    deferred_rows: list[dict[str, str]] = []
+    open_rounds: set[int] = set()
+
+    for row in schedule_rows:
+        round_index = parse_int(row.get("round_index"))
+        if round_index <= 0:
+            continue
+        status = effective_row_status(row)
+        queue_state = str(row.get("queue_state") or "").strip()
+        collect_state = str(row.get("collect_state") or "").strip()
+        if row_has_open_queue_work(row) if scheduler_mode == "queue" else not row_is_resolved(row):
+            open_rounds.add(round_index)
+        if status in {"prepared", "needs_rerun"} and queue_state == "tail_retry_pending":
+            tail_retry_rows.append(row)
+        elif status in {"prepared", "needs_rerun"}:
+            waiting_rows.append(row)
+        if status == "completed" and collect_state != "done":
+            collect_rows.append(row)
+        if status == "deferred_long_tail":
+            deferred_rows.append(row)
+
+    def earliest_round(rows: list[dict[str, str]]) -> int | None:
+        indexes = [parse_int(row.get("round_index")) for row in rows if parse_int(row.get("round_index")) > 0]
+        return min(indexes) if indexes else None
+
+    return {
+        "earliest_open_round_index": min(open_rounds) if open_rounds else None,
+        "waiting_count": len(waiting_rows),
+        "waiting_earliest_round_index": earliest_round(waiting_rows),
+        "tail_retry_count": len(tail_retry_rows),
+        "tail_retry_earliest_round_index": earliest_round(tail_retry_rows),
+        "collect_count": len(collect_rows),
+        "collect_earliest_round_index": earliest_round(collect_rows),
+        "deferred_count": len(deferred_rows),
+        "deferred_earliest_round_index": earliest_round(deferred_rows),
+    }
+
+
+def active_slots_from_state(state: dict[str, object] | None) -> list[dict[str, object]]:
+    if not isinstance(state, dict) or not isinstance(state.get("slots"), list):
+        return []
+    return [
+        item
+        for item in state["slots"]
+        if isinstance(item, dict) and item.get("state") == "running" and item.get("batch_file")
+    ]
+
+
+def build_active_progress(
+    *,
+    state: dict[str, object] | None,
+    schedule_rows: list[dict[str, str]],
+) -> dict[str, object]:
+    active_slots = active_slots_from_state(state)
+    if active_slots:
+        active_rounds = sorted({parse_int(item.get("round_index")) for item in active_slots if parse_int(item.get("round_index")) > 0})
+        active_batch_numbers = sorted(
+            {
+                parse_batch_number(str(item.get("batch_file") or ""))
+                for item in active_slots
+                if parse_batch_number(str(item.get("batch_file") or "")) > 0
+            }
+        )
+        return {
+            "source": "supervisor_state.slots",
+            "active_round_indexes": active_rounds,
+            "active_round_min": active_rounds[0] if active_rounds else None,
+            "active_round_max": active_rounds[-1] if active_rounds else None,
+            "active_batch_min": active_batch_numbers[0] if active_batch_numbers else None,
+            "active_batch_max": active_batch_numbers[-1] if active_batch_numbers else None,
+            "active_batch_count": len(active_slots),
+            "frontier_round_index": active_rounds[-1] if active_rounds else None,
+            "frontier_batch_number": active_batch_numbers[-1] if active_batch_numbers else None,
+        }
+
+    running_rows = [row for row in schedule_rows if effective_row_status(row) == "running"]
+    active_rounds = sorted({parse_int(row.get("round_index")) for row in running_rows if parse_int(row.get("round_index")) > 0})
+    active_batch_numbers = sorted(
+        {
+            parse_batch_number(str(row.get("batch_file") or ""))
+            for row in running_rows
+            if parse_batch_number(str(row.get("batch_file") or "")) > 0
+        }
+    )
+    return {
+        "source": "schedule.running_rows",
+        "active_round_indexes": active_rounds,
+        "active_round_min": active_rounds[0] if active_rounds else None,
+        "active_round_max": active_rounds[-1] if active_rounds else None,
+        "active_batch_min": active_batch_numbers[0] if active_batch_numbers else None,
+        "active_batch_max": active_batch_numbers[-1] if active_batch_numbers else None,
+        "active_batch_count": len(running_rows),
+        "frontier_round_index": active_rounds[-1] if active_rounds else None,
+        "frontier_batch_number": active_batch_numbers[-1] if active_batch_numbers else None,
+    }
+
+
+def build_active_batches(
+    *,
+    state: dict[str, object] | None,
+    schedule_rows: list[dict[str, str]],
+) -> list[dict[str, object]]:
+    row_by_batch = {str(row.get("batch_file") or ""): row for row in schedule_rows}
+    output: list[dict[str, object]] = []
+    active_slots = active_slots_from_state(state)
+    if active_slots:
+        for item in sorted(active_slots, key=lambda slot: parse_int(slot.get("slot_id"))):
+            batch_file = str(item.get("batch_file") or "")
+            row = row_by_batch.get(batch_file, {})
+            output.append(
+                {
+                    "slot_id": parse_int(item.get("slot_id")),
+                    "batch_file": batch_file,
+                    "batch_number": parse_batch_number(batch_file),
+                    "round_index": parse_int(item.get("round_index")),
+                    "attempt_index": parse_int(item.get("attempt_index")),
+                    "status": effective_row_status(row) if row else "running",
+                    "queue_state": row.get("queue_state") or item.get("queue_state") or "",
+                    "active_attempt": row.get("active_attempt") or "",
+                    "classifier_rows": parse_int(row.get("last_seen_classifier_rows")),
+                    "result_rows": parse_int(row.get("last_seen_result_rows")),
+                    "task_count": parse_int(row.get("task_count")),
+                    "split_recovery": bool(item.get("split_recovery")),
+                    "pid_count": parse_int(item.get("pid_count")),
+                    "prepared_reason": row.get("prepared_reason") or "",
+                }
+            )
+        return output
+
+    for row in schedule_rows:
+        if effective_row_status(row) != "running":
+            continue
+        batch_file = str(row.get("batch_file") or "")
+        output.append(
+            {
+                "slot_id": parse_int(row.get("slot_id")),
+                "batch_file": batch_file,
+                "batch_number": parse_batch_number(batch_file),
+                "round_index": parse_int(row.get("round_index")),
+                "attempt_index": parse_int(row.get("attempt_index")),
+                "status": effective_row_status(row),
+                "queue_state": row.get("queue_state") or "",
+                "active_attempt": row.get("active_attempt") or "",
+                "classifier_rows": parse_int(row.get("last_seen_classifier_rows")),
+                "result_rows": parse_int(row.get("last_seen_result_rows")),
+                "task_count": parse_int(row.get("task_count")),
+                "split_recovery": False,
+                "pid_count": 0,
+                "prepared_reason": row.get("prepared_reason") or "",
+            }
+        )
+    output.sort(key=lambda item: (parse_int(item.get("round_index")), parse_int(item.get("slot_id")), str(item.get("batch_file"))))
+    return output
+
+
+def stale_schedule_running_batches(
+    *,
+    state: dict[str, object] | None,
+    schedule_rows: list[dict[str, str]],
+) -> list[dict[str, object]]:
+    active_batch_files = {str(item.get("batch_file") or "") for item in active_slots_from_state(state)}
+    if not active_batch_files:
+        return []
+    stale: list[dict[str, object]] = []
+    for row in schedule_rows:
+        batch_file = str(row.get("batch_file") or "")
+        if effective_row_status(row) != "running" or batch_file in active_batch_files:
+            continue
+        stale.append(
+            {
+                "batch_file": batch_file,
+                "batch_number": parse_batch_number(batch_file),
+                "round_index": parse_int(row.get("round_index")),
+                "slot_id": parse_int(row.get("slot_id")),
+                "attempt_index": parse_int(row.get("attempt_index")),
+                "classifier_rows": parse_int(row.get("last_seen_classifier_rows")),
+                "result_rows": parse_int(row.get("last_seen_result_rows")),
+                "task_count": parse_int(row.get("task_count")),
+                "prepared_reason": row.get("prepared_reason") or "",
+            }
+        )
+    stale.sort(key=lambda item: (parse_int(item.get("round_index")), parse_int(item.get("batch_number"))))
+    return stale
 
 
 def summarize_rounds(state: dict[str, object], schedule_rows: list[dict[str, str]]) -> list[dict[str, object]]:
@@ -459,39 +663,23 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         for item in managed_processes_raw
     ]
 
-    state_round_index = None
-    if isinstance(state, dict):
-        try:
-            state_round_index = int(state.get("current_round_index"))
-        except (TypeError, ValueError):
-            state_round_index = None
-
     scheduler_mode = "round"
     if latest_job and isinstance(latest_job.get("scheduler_mode"), str) and latest_job.get("scheduler_mode"):
         scheduler_mode = str(latest_job.get("scheduler_mode"))
     if isinstance(state, dict) and isinstance(state.get("scheduler_mode"), str) and state.get("scheduler_mode"):
         scheduler_mode = str(state.get("scheduler_mode"))
 
-    current_round_index = state_round_index
-    if schedule_rows:
-        unresolved_rounds = sorted(
-            {
-                int(row.get("round_index") or "0")
-                for row in schedule_rows
-                if int(row.get("round_index") or "0") > 0
-                and (
-                    row_has_open_queue_work(row)
-                    if scheduler_mode == "queue"
-                    else not row_is_resolved(row)
-                )
-            }
-        )
-        if unresolved_rounds:
-            schedule_round_index = unresolved_rounds[0]
-            if current_round_index != schedule_round_index:
-                current_round_index = schedule_round_index
+    state_current_round_index = parse_int(state.get("current_round_index")) if isinstance(state, dict) else None
+    backlog_summary = build_backlog_summary(schedule_rows, scheduler_mode)
+    active_progress = build_active_progress(state=state, schedule_rows=schedule_rows)
+    current_round_index = active_progress.get("frontier_round_index")
+    if current_round_index is None and scheduler_mode != "queue":
+        current_round_index = state_current_round_index
+    earliest_open_round_index = backlog_summary.get("earliest_open_round_index")
 
     rounds = summarize_rounds(state or {}, schedule_rows)
+    active_batches = build_active_batches(state=state, schedule_rows=schedule_rows)
+    stale_running_batches = stale_schedule_running_batches(state=state, schedule_rows=schedule_rows)
     unit_name = str((latest_job or {}).get("unit_name") or "")
     systemd_unit = read_systemd_unit_status(unit_name) if unit_name else {
         "available": False,
@@ -545,6 +733,11 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         },
         "systemd_unit_check": systemd_unit,
         "current_round_index": current_round_index,
+        "current_round_index_semantics": "active_progress_frontier_round_index",
+        "state_current_round_index": state_current_round_index,
+        "earliest_open_round_index": earliest_open_round_index,
+        "active_progress": active_progress,
+        "backlog_summary": backlog_summary,
         "target_rounds": state.get("target_rounds") if state else None,
         "max_workers": state.get("max_workers") if state else None,
         "slots": state.get("slots") if state else None,
@@ -554,7 +747,10 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         "deferred_queue": state.get("deferred_queue") if state else None,
         "active_workers": managed_processes,
         "round_summaries": rounds,
+        "active_batches": active_batches,
         "current_round_batches": current_round_batches(schedule_rows, current_round_index),
+        "earliest_backlog_round_batches": current_round_batches(schedule_rows, earliest_open_round_index),
+        "stale_schedule_running_batches": stale_running_batches,
         "recent_events": events_tail,
     }
     return payload
@@ -606,9 +802,38 @@ def print_human(payload: dict[str, object]) -> None:
             f"{heartbeat.get('timestamp')} "
             f"from {heartbeat.get('source')}"
         )
-    print(f"current_round_index: {payload.get('current_round_index')}")
+    print(
+        "current_round_index: "
+        f"{payload.get('current_round_index')} "
+        f"({payload.get('current_round_index_semantics')})"
+    )
+    if payload.get("state_current_round_index") is not None:
+        print(f"state_current_round_index: {payload.get('state_current_round_index')} (legacy/earliest-open in older queue states)")
+    if payload.get("earliest_open_round_index") is not None:
+        print(f"earliest_open_round_index: {payload.get('earliest_open_round_index')}")
     if payload.get("max_workers") is not None:
         print(f"max_workers: {payload.get('max_workers')}")
+
+    active_progress = payload.get("active_progress")
+    if isinstance(active_progress, dict):
+        print(
+            "active_progress: "
+            f"source={active_progress.get('source')} "
+            f"active_rounds={active_progress.get('active_round_indexes')} "
+            f"batch_range={active_progress.get('active_batch_min')}->{active_progress.get('active_batch_max')} "
+            f"frontier_round={active_progress.get('frontier_round_index')} "
+            f"frontier_batch={active_progress.get('frontier_batch_number')}"
+        )
+
+    backlog_summary = payload.get("backlog_summary")
+    if isinstance(backlog_summary, dict):
+        print(
+            "backlog_summary: "
+            f"waiting={backlog_summary.get('waiting_count')}@round{backlog_summary.get('waiting_earliest_round_index')} "
+            f"tail_retry={backlog_summary.get('tail_retry_count')}@round{backlog_summary.get('tail_retry_earliest_round_index')} "
+            f"collect={backlog_summary.get('collect_count')}@round{backlog_summary.get('collect_earliest_round_index')} "
+            f"deferred={backlog_summary.get('deferred_count')}@round{backlog_summary.get('deferred_earliest_round_index')}"
+        )
 
     target_rounds = payload.get("target_rounds")
     if isinstance(target_rounds, list):
@@ -650,6 +875,24 @@ def print_human(payload: dict[str, object]) -> None:
                 f"pid_count={item.get('pid_count')}"
             )
 
+    active_batches = payload.get("active_batches")
+    if isinstance(active_batches, list) and active_batches:
+        print("active_batches:")
+        for item in active_batches:
+            if not isinstance(item, dict):
+                continue
+            print(
+                "  - "
+                f"slot={item.get('slot_id')} "
+                f"round={item.get('round_index')} "
+                f"batch={item.get('batch_file')} "
+                f"attempt={item.get('attempt_index')} "
+                f"status={item.get('status')} "
+                f"rows={item.get('result_rows')}/{item.get('task_count')} "
+                f"split_recovery={item.get('split_recovery')} "
+                f"pid_count={item.get('pid_count')}"
+            )
+
     for key in ["waiting_queue", "tail_retry_queue", "collect_queue", "deferred_queue"]:
         queue_items = payload.get(key)
         if isinstance(queue_items, list) and queue_items:
@@ -683,7 +926,7 @@ def print_human(payload: dict[str, object]) -> None:
 
     current_round_batches = payload.get("current_round_batches")
     if isinstance(current_round_batches, list) and current_round_batches:
-        print("current_round_batches:")
+        print("current_round_batches (active frontier round only):")
         for item in current_round_batches:
             if not isinstance(item, dict):
                 continue
@@ -696,6 +939,29 @@ def print_human(payload: dict[str, object]) -> None:
                 f"result_rows={item.get('result_rows')} "
                 f"prepared_reason={item.get('prepared_reason')}"
             )
+
+    earliest_backlog_round_batches = payload.get("earliest_backlog_round_batches")
+    if isinstance(earliest_backlog_round_batches, list) and earliest_backlog_round_batches:
+        print("earliest_backlog_round_batches:")
+        for item in earliest_backlog_round_batches:
+            if not isinstance(item, dict):
+                continue
+            print(
+                "  - "
+                f"batch={item.get('batch_file')} "
+                f"status={item.get('status')} "
+                f"attempt={item.get('active_attempt')} "
+                f"classifier_rows={item.get('classifier_rows')} "
+                f"result_rows={item.get('result_rows')} "
+                f"prepared_reason={item.get('prepared_reason')}"
+            )
+
+    stale_schedule_running = payload.get("stale_schedule_running_batches")
+    if isinstance(stale_schedule_running, list) and stale_schedule_running:
+        print("stale_schedule_running_batches:")
+        for item in stale_schedule_running:
+            if isinstance(item, dict):
+                print(f"  - {item}")
 
     recent_events = payload.get("recent_events")
     if isinstance(recent_events, list) and recent_events:

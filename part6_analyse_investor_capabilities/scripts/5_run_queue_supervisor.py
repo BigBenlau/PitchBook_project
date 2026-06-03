@@ -39,6 +39,10 @@ RUNNING_PHASES = {
 }
 DEFAULT_MAX_TAIL_RETRIES = 1
 TAIL_RETRY_PENDING_VALUE = "yes"
+DEFAULT_TAIL_RETRY_DRAIN_BUDGET = 1
+DEFAULT_TAIL_RETRY_DRAIN_MIN_FREE_WORKERS = 2
+DEFAULT_SPLIT_STARTUP_NO_ROW_SHARD_LIMIT = 3
+SPLIT_STARTUP_NO_ROW_EXHAUSTED_REASON = "split_startup_no_row_exhausted"
 
 
 def load_round_supervisor_module() -> Any:
@@ -103,6 +107,16 @@ def parse_args() -> argparse.Namespace:
         dest="split_batch_failure_threshold",
         type=int,
         default=ROUND.DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD,
+    )
+    parser.add_argument(
+        "--split-startup-no-row-shard-limit",
+        dest="split_startup_no_row_shard_limit",
+        type=int,
+        default=DEFAULT_SPLIT_STARTUP_NO_ROW_SHARD_LIMIT,
+        help=(
+            "Maximum spawn_count for a split shard that is still 0-row after "
+            "split_startup_no_row failures before parking the whole batch to tail retry."
+        ),
     )
     return parser.parse_args()
 
@@ -255,6 +269,10 @@ def normalize_queue_rows(
             updated.get("prepared_reason") or updated.get("last_rerun_reason") or ""
         ).strip()
         split_launch_requested = rerun_reason == ROUND.SPLIT_BATCH_LAUNCH_REASON
+        explicit_failure_rerun = (
+            status == "needs_rerun"
+            and rerun_reason in ROUND.SPLIT_BATCH_FAILURE_TYPES
+        )
         queue_state = str(updated.get("queue_state") or "").strip()
         progress_implies_live_attempt = has_attempt_progress and (
             parse_slot_id(updated.get("slot_id")) > 0 or queue_state in {"running", "launching"}
@@ -269,7 +287,11 @@ def normalize_queue_rows(
         if status in {"prepared", "needs_rerun"} and (
             has_live_registry
             or has_active_split
-            or (progress_implies_live_attempt and not split_launch_requested)
+            or (
+                progress_implies_live_attempt
+                and not split_launch_requested
+                and not explicit_failure_rerun
+            )
         ):
             updated["status"] = "running"
             status = "running"
@@ -336,6 +358,17 @@ def normalize_queue_rows(
 
         if status in {"prepared", "needs_rerun"}:
             desired_queue_state = "tail_retry_pending" if row_tail_retry_pending(updated) else "queued"
+            if row_tail_retry_pending(updated):
+                current_rows = min(
+                    ROUND.parse_int(updated.get("last_seen_classifier_rows"), 0),
+                    ROUND.parse_int(updated.get("last_seen_result_rows"), 0),
+                )
+                if updated.get("prepared_mode") != ("continue_from_prefix" if current_rows > 0 else "fresh_restart"):
+                    updated["prepared_mode"] = "continue_from_prefix" if current_rows > 0 else "fresh_restart"
+                    changed = True
+                if updated.get("prepared_reason") != "tail_retry_after_primary_drain":
+                    updated["prepared_reason"] = "tail_retry_after_primary_drain"
+                    changed = True
             if updated.get("queue_state") != desired_queue_state:
                 updated["queue_state"] = desired_queue_state
                 changed = True
@@ -620,22 +653,71 @@ def write_state(
     tail_retry_queue = tail_retry_rows(schedule_rows, target_rounds)
     collect_queue = ready_to_collect_rows(schedule_rows, target_rounds)
     deferred_queue = deferred_rows(schedule_rows, target_rounds)
-    current_round_index = earliest_open_round(schedule_rows, target_rounds)
+    slots = build_slots(
+        schedule_rows,
+        target_rounds=target_rounds,
+        registry=registry,
+        max_workers=max_workers,
+    )
+    active_slots = [slot for slot in slots if slot.get("state") == "running"]
+    active_rounds = sorted(
+        {
+            ROUND.parse_int(slot.get("round_index"), 0)
+            for slot in active_slots
+            if ROUND.parse_int(slot.get("round_index"), 0) > 0
+        }
+    )
+    active_batch_numbers = sorted(
+        {
+            parse_batch_number(str(slot.get("batch_file") or ""))
+            for slot in active_slots
+            if parse_batch_number(str(slot.get("batch_file") or "")) > 0
+        }
+    )
+    earliest_open_round_index = earliest_open_round(schedule_rows, target_rounds)
+    current_round_index = active_rounds[-1] if active_rounds else earliest_open_round_index
     payload = {
         "updated_at": ROUND.iso_now(),
         "runs_dir": str(runs_dir),
         "target_rounds": target_rounds,
         "current_round_index": current_round_index,
+        "current_round_index_semantics": "active_progress_frontier_round_index",
+        "earliest_open_round_index": earliest_open_round_index,
+        "active_progress": {
+            "source": "supervisor_state.slots",
+            "active_round_indexes": active_rounds,
+            "active_round_min": active_rounds[0] if active_rounds else None,
+            "active_round_max": active_rounds[-1] if active_rounds else None,
+            "active_batch_min": active_batch_numbers[0] if active_batch_numbers else None,
+            "active_batch_max": active_batch_numbers[-1] if active_batch_numbers else None,
+            "active_batch_count": len(active_slots),
+            "frontier_round_index": active_rounds[-1] if active_rounds else None,
+            "frontier_batch_number": active_batch_numbers[-1] if active_batch_numbers else None,
+        },
+        "backlog_summary": {
+            "earliest_open_round_index": earliest_open_round_index,
+            "waiting_count": len(waiting),
+            "waiting_earliest_round_index": min(
+                [ROUND.parse_int(row.get("round_index"), 0) for row in waiting]
+            ) if waiting else None,
+            "tail_retry_count": len(tail_retry_queue),
+            "tail_retry_earliest_round_index": min(
+                [ROUND.parse_int(row.get("round_index"), 0) for row in tail_retry_queue]
+            ) if tail_retry_queue else None,
+            "collect_count": len(collect_queue),
+            "collect_earliest_round_index": min(
+                [ROUND.parse_int(row.get("round_index"), 0) for row in collect_queue]
+            ) if collect_queue else None,
+            "deferred_count": len(deferred_queue),
+            "deferred_earliest_round_index": min(
+                [ROUND.parse_int(row.get("round_index"), 0) for row in deferred_queue]
+            ) if deferred_queue else None,
+        },
         "phase": phase,
         "scheduler_mode": "queue",
         "strict_wait_for_all_rounds": False,
         "max_workers": max_workers,
-        "slots": build_slots(
-            schedule_rows,
-            target_rounds=target_rounds,
-            registry=registry,
-            max_workers=max_workers,
-        ),
+        "slots": slots,
         "waiting_queue": [
             {
                 "batch_file": row.get("batch_file") or "",
@@ -992,8 +1074,21 @@ def mark_batches_verifier_rerun(
     return apply_batch_row_updates(schedule_rows, batch_files=batch_files, update_fn=_update)
 
 
-def tail_retry_launch_allowed(schedule_rows: list[dict[str, str]], target_rounds: list[int]) -> bool:
-    return not waiting_rows(schedule_rows, target_rounds) and not ready_to_collect_rows(schedule_rows, target_rounds)
+def tail_retry_drain_budget(
+    schedule_rows: list[dict[str, str]],
+    target_rounds: list[int],
+    *,
+    process_budget: int,
+) -> int:
+    if process_budget <= 0 or ready_to_collect_rows(schedule_rows, target_rounds):
+        return 0
+    if not tail_retry_rows(schedule_rows, target_rounds):
+        return 0
+    if not waiting_rows(schedule_rows, target_rounds):
+        return process_budget
+    if process_budget < DEFAULT_TAIL_RETRY_DRAIN_MIN_FREE_WORKERS:
+        return 0
+    return min(DEFAULT_TAIL_RETRY_DRAIN_BUDGET, process_budget - 1)
 
 
 def gather_launch_rows(
@@ -1009,19 +1104,24 @@ def gather_launch_rows(
     if process_budget <= 0:
         return []
 
-    allow_tail_retry = tail_retry_launch_allowed(schedule_rows, target_rounds)
-    candidate_rows: list[dict[str, str]] = []
+    normal_candidates: list[dict[str, str]] = []
+    tail_retry_candidates: list[dict[str, str]] = []
     for row in target_scope_rows(schedule_rows, target_rounds):
         if row_is_actively_running(row, registry):
             continue
         if effective_status(row) not in {"prepared", "needs_rerun"}:
             continue
-        if row_tail_retry_pending(row) and not allow_tail_retry:
+        if row_tail_retry_pending(row):
+            tail_retry_candidates.append(row)
             continue
-        candidate_rows.append(row)
+        normal_candidates.append(row)
 
-    candidate_rows.sort(key=row_sort_key)
-    selected_rows = candidate_rows[:process_budget]
+    normal_candidates.sort(key=row_sort_key)
+    tail_retry_candidates.sort(key=row_sort_key)
+    drain_budget = tail_retry_drain_budget(schedule_rows, target_rounds, process_budget=process_budget)
+    selected_tail_retry_rows = tail_retry_candidates[:drain_budget]
+    remaining_budget = max(0, process_budget - len(selected_tail_retry_rows))
+    selected_rows = sorted(normal_candidates[:remaining_budget] + selected_tail_retry_rows, key=row_sort_key)
 
     batch_files_by_round: dict[int, list[str]] = {}
     for row in selected_rows:
@@ -1119,6 +1219,134 @@ def queue_run_complete(schedule_rows: list[dict[str, str]], target_rounds: list[
     return not any(row_has_open_queue_work(row) for row in target_scope_rows(schedule_rows, target_rounds))
 
 
+def split_shard_inspection(shard: dict[str, Any]) -> dict[str, Any]:
+    try:
+        shard_tasks = ROUND.load_jsonl_tasks(Path(str(shard["tasks_file"])))
+        inspection = ROUND.inspect_attempt_outputs(
+            classifier_path=Path(str(shard["classifier_results_csv"])),
+            results_path=Path(str(shard["results_csv"])),
+            tasks=shard_tasks,
+        )
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        return {
+            "state": "read_error",
+            "error": repr(exc),
+            "task_count": ROUND.parse_int(shard.get("task_count"), 0),
+            "classifier_rows": 0,
+            "result_rows": 0,
+            "prefix_len": 0,
+        }
+    inspection["task_count"] = len(shard_tasks)
+    return inspection
+
+
+def split_startup_no_row_exhausted_rows(
+    schedule_rows: list[dict[str, str]],
+    target_rounds: list[int],
+    *,
+    shard_limit: int,
+) -> tuple[list[dict[str, str]], list[dict[str, str]], bool]:
+    if shard_limit <= 0:
+        return schedule_rows, [], False
+
+    target_set = set(target_rounds)
+    updated_rows: list[dict[str, str]] = []
+    deferred_rows: list[dict[str, str]] = []
+    changed = False
+    now_iso = ROUND.iso_now()
+
+    for row in schedule_rows:
+        updated = dict(row)
+        round_index = ROUND.parse_int(updated.get("round_index"), 0)
+        if round_index not in target_set:
+            updated_rows.append(updated)
+            continue
+
+        split_state_path = ROUND.split_state_path_for_row(updated)
+        split_state = ROUND.load_json_dict(split_state_path)
+        if not ROUND.split_state_active(split_state):
+            updated_rows.append(updated)
+            continue
+
+        progress_classifier_rows = 0
+        progress_result_rows = 0
+        exhausted_shards: list[str] = []
+        for shard in split_state.get("shards", []):
+            inspection = split_shard_inspection(shard)
+            task_count = ROUND.parse_int(inspection.get("task_count"), 0)
+            classifier_rows = min(ROUND.parse_int(inspection.get("classifier_rows"), 0), task_count)
+            result_rows = min(ROUND.parse_int(inspection.get("result_rows"), 0), task_count)
+            progress_classifier_rows += classifier_rows
+            progress_result_rows += result_rows
+
+            zero_row = max(
+                classifier_rows,
+                result_rows,
+                ROUND.parse_int(inspection.get("prefix_len"), 0),
+                ROUND.parse_int(shard.get("rows_written"), 0),
+            ) == 0
+            if not zero_row:
+                continue
+            if str(shard.get("first_row_at") or "").strip():
+                continue
+            if str(shard.get("last_failure_reason") or "").strip() != "split_startup_no_row":
+                continue
+            if ROUND.parse_int(shard.get("spawn_count"), 0) < shard_limit:
+                continue
+            exhausted_shards.append(str(shard.get("shard_id") or ""))
+
+        if progress_classifier_rows > ROUND.parse_int(updated.get("last_seen_classifier_rows"), 0):
+            updated["last_seen_classifier_rows"] = str(progress_classifier_rows)
+            changed = True
+        if progress_result_rows > ROUND.parse_int(updated.get("last_seen_result_rows"), 0):
+            updated["last_seen_result_rows"] = str(progress_result_rows)
+            changed = True
+        if progress_classifier_rows > 0 or progress_result_rows > 0:
+            if not str(updated.get("first_row_at") or "").strip():
+                updated["first_row_at"] = now_iso
+                changed = True
+            updated["last_progress_at"] = now_iso
+            changed = True
+
+        if exhausted_shards:
+            split_state["state"] = "startup_no_row_exhausted"
+            split_state["exhausted_at"] = now_iso
+            split_state["exhausted_reason"] = SPLIT_STARTUP_NO_ROW_EXHAUSTED_REASON
+            split_state["exhausted_shards"] = exhausted_shards
+            split_state["progress_classifier_rows"] = progress_classifier_rows
+            split_state["progress_result_rows"] = progress_result_rows
+            split_state["updated_at"] = now_iso
+            ROUND.write_json_dict(split_state_path, split_state)
+            deferred_rows.append(
+                {
+                    "round_index": str(updated.get("round_index") or ""),
+                    "worker_slot": str(updated.get("worker_slot") or updated.get("slot_id") or ""),
+                    "batch_file": str(updated.get("batch_file") or ""),
+                    "run_dir": str(updated.get("run_dir") or ""),
+                    "active_attempt": str(updated.get("active_attempt") or ""),
+                    "attempt_index": str(updated.get("attempt_index") or ""),
+                    "first_task_index": str(updated.get("first_task_index") or ""),
+                    "last_task_index": str(updated.get("last_task_index") or ""),
+                    "status": "deferred_long_tail",
+                    "reason": SPLIT_STARTUP_NO_ROW_EXHAUSTED_REASON,
+                    "elapsed_seconds": "",
+                    "timeout_seconds": "",
+                    "classifier_rows": str(progress_classifier_rows),
+                    "result_rows": str(progress_result_rows),
+                    "round_entry_started_at": str(updated.get("round_entry_started_at") or ""),
+                    "first_row_at": str(updated.get("first_row_at") or ""),
+                    "last_progress_at": str(updated.get("last_progress_at") or ""),
+                    "deferred_at": now_iso,
+                    "exhausted_shards": ",".join(exhausted_shards),
+                }
+            )
+            changed = True
+
+        updated_rows.append(updated)
+
+    return updated_rows, deferred_rows, changed
+
+
 def park_tail_retry_rows(
     schedule_rows: list[dict[str, str]],
     *,
@@ -1137,9 +1365,29 @@ def park_tail_retry_rows(
             updated_rows.append(updated)
             continue
 
+        deferred_reason = str(deferred.get("reason") or "batch_timeout_exceeded")
+        failure_type = "long_tail_timeout" if deferred_reason == "batch_timeout_exceeded" else deferred_reason
         current_rows = min(
-            ROUND.parse_int(updated.get("last_seen_classifier_rows"), 0),
-            ROUND.parse_int(updated.get("last_seen_result_rows"), 0),
+            max(
+                ROUND.parse_int(updated.get("last_seen_classifier_rows"), 0),
+                ROUND.parse_int(deferred.get("classifier_rows"), 0),
+            ),
+            max(
+                ROUND.parse_int(updated.get("last_seen_result_rows"), 0),
+                ROUND.parse_int(deferred.get("result_rows"), 0),
+            ),
+        )
+        updated["last_seen_classifier_rows"] = str(
+            max(
+                ROUND.parse_int(updated.get("last_seen_classifier_rows"), 0),
+                ROUND.parse_int(deferred.get("classifier_rows"), 0),
+            )
+        )
+        updated["last_seen_result_rows"] = str(
+            max(
+                ROUND.parse_int(updated.get("last_seen_result_rows"), 0),
+                ROUND.parse_int(deferred.get("result_rows"), 0),
+            )
         )
         updated["status"] = "needs_rerun"
         updated["queue_state"] = "tail_retry_pending"
@@ -1147,8 +1395,8 @@ def park_tail_retry_rows(
         updated["collect_failure_reason"] = ""
         updated["prepared_mode"] = "continue_from_prefix" if current_rows > 0 else "fresh_restart"
         updated["prepared_reason"] = "tail_retry_after_primary_drain"
-        updated["last_failure_type"] = "long_tail_timeout"
-        updated["last_rerun_reason"] = "long_tail_timeout"
+        updated["last_failure_type"] = failure_type
+        updated["last_rerun_reason"] = failure_type
         updated["last_rerun_at"] = str(deferred.get("deferred_at") or ROUND.iso_now())
         updated["completion_mode"] = ""
         updated["deferred_at"] = ""
@@ -1166,7 +1414,10 @@ def park_tail_retry_rows(
 
         split_state_path = ROUND.split_state_path_for_row(updated)
         split_state = ROUND.load_json_dict(split_state_path)
-        if ROUND.split_state_active(split_state):
+        if (
+            ROUND.split_state_active(split_state)
+            or str(split_state.get("state") or "").strip() == "startup_no_row_exhausted"
+        ):
             split_state["state"] = "tail_retry_pending"
             split_state["queued_at"] = updated["last_rerun_at"]
             split_state["updated_at"] = ROUND.iso_now()
@@ -1179,6 +1430,7 @@ def park_tail_retry_rows(
                 f"round={updated.get('round_index', '')} "
                 f"batch={batch_file} "
                 f"attempt={updated.get('attempt_index', '')} "
+                f"reason={failure_type} "
                 f"tail_retry_count={updated.get('tail_retry_count', '0')} "
                 f"classifier_rows={updated.get('last_seen_classifier_rows', '0')} "
                 f"result_rows={updated.get('last_seen_result_rows', '0')}"
@@ -1202,6 +1454,8 @@ def main() -> None:
         raise SystemExit("--split-batch-respawn-threshold must be greater than 0.")
     if args.split_batch_failure_threshold <= 0:
         raise SystemExit("--split-batch-failure-threshold must be greater than 0.")
+    if args.split_startup_no_row_shard_limit <= 0:
+        raise SystemExit("--split-startup-no-row-shard-limit must be greater than 0.")
 
     runs_dir = args.runs_dir.resolve()
     schedule_csv = ROUND.resolve_runs_path(runs_dir, args.schedule_csv, ROUND.DEFAULT_SCHEDULE_CSV)
@@ -1245,7 +1499,8 @@ def main() -> None:
             f"startup_timeout={args.startup_no_row_timeout_seconds}s "
             f"stall_timeout={args.partial_stall_timeout_seconds}s "
             f"batch_timeout={args.batch_timeout_seconds}s "
-            f"split_thresholds=respawn>={args.split_batch_respawn_threshold},failures>={args.split_batch_failure_threshold}"
+            f"split_thresholds=respawn>={args.split_batch_respawn_threshold},failures>={args.split_batch_failure_threshold} "
+            f"split_startup_no_row_shard_limit={args.split_startup_no_row_shard_limit}"
         ),
     )
 
@@ -1294,6 +1549,86 @@ def main() -> None:
             registry=registry,
             max_workers=args.max_workers,
         )
+
+        (
+            schedule_rows,
+            split_startup_exhausted_rows,
+            split_startup_guard_changed,
+        ) = split_startup_no_row_exhausted_rows(
+            schedule_rows,
+            target_rounds,
+            shard_limit=args.split_startup_no_row_shard_limit,
+        )
+        if split_startup_exhausted_rows:
+            registry = ROUND.terminate_for_batch_files(
+                {
+                    str(row.get("batch_file") or "")
+                    for row in split_startup_exhausted_rows
+                    if str(row.get("batch_file") or "").strip()
+                },
+                registry,
+                events_log,
+                reason=SPLIT_STARTUP_NO_ROW_EXHAUSTED_REASON,
+            )
+            parked_split_startup_rows = [
+                row
+                for row in split_startup_exhausted_rows
+                if parse_tail_retry_count(
+                    (
+                        ROUND.find_schedule_row(
+                            schedule_rows,
+                            batch_file=str(row.get("batch_file") or ""),
+                            attempt_index=ROUND.parse_int(row.get("attempt_index"), 0),
+                        )
+                        or {}
+                    ).get("tail_retry_count", "0")
+                ) < DEFAULT_MAX_TAIL_RETRIES
+            ]
+            parked_split_startup_batch_files = {
+                str(row.get("batch_file") or "") for row in parked_split_startup_rows
+            }
+            terminal_split_startup_rows = [
+                row
+                for row in split_startup_exhausted_rows
+                if str(row.get("batch_file") or "") not in parked_split_startup_batch_files
+            ]
+            if parked_split_startup_rows:
+                schedule_rows = park_tail_retry_rows(
+                    schedule_rows,
+                    deferred_rows=parked_split_startup_rows,
+                    events_log=events_log,
+                )
+                save_schedule(schedule_csv, fieldnames, schedule_rows)
+            if terminal_split_startup_rows:
+                schedule_rows = ROUND.mark_long_tail_deferred(
+                    schedule_csv,
+                    schedule_rows,
+                    terminal_split_startup_rows,
+                    schedule_fieldnames=fieldnames,
+                    runs_dir=runs_dir,
+                    events_log=events_log,
+                )
+            ROUND.log_event(
+                events_log,
+                (
+                    "[split_startup_no_row:park] "
+                    f"batches={len(split_startup_exhausted_rows)} "
+                    f"tail_retry={len(parked_split_startup_rows)} "
+                    f"terminal_deferred={len(terminal_split_startup_rows)} "
+                    f"shard_limit={args.split_startup_no_row_shard_limit}"
+                ),
+            )
+            ROUND.save_registry(registry_json, registry)
+            schedule_rows = refresh_schedule(
+                schedule_csv,
+                fieldnames=fieldnames,
+                state_hint=ROUND.load_json_dict(state_json),
+                registry=registry,
+                max_workers=args.max_workers,
+            )
+            phase = "tail_retry_pending" if parked_split_startup_rows else "deferred_long_tail"
+        elif split_startup_guard_changed:
+            save_schedule(schedule_csv, fieldnames, schedule_rows)
 
         split_changed_any = False
         for round_index in target_rounds:
