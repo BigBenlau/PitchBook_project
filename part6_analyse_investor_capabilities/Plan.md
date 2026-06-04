@@ -128,6 +128,7 @@ Routing rules:
 
 Conservative rule:
 - if uncertain between `skip_candidate` and `light`, use `light`
+- `skip_candidate` rows must use `none` or `low` for both `crypto_native_likelihood` and `operating_capability_likelihood`; if either likelihood is `high`, `medium`, or `unclear`, route the row to `light` or `full` instead
 
 ## Stage 2: Result Schema
 
@@ -139,11 +140,14 @@ task_index,investor_id,investor_name,normalized_domain,primary_investor_type,inv
 
 Rules:
 - one row per investor
+- copy `task_index`, `investor_id`, `investor_name`, `normalized_domain`, and `primary_investor_type` exactly from the top-level task fields; do not infer or replace input metadata
 - the six capability columns must be `yes` or `no`
 - `capability_labels` must be the JSON list of every capability column set to `yes`
 - `other_flags` must be a JSON list string
+- `completed_at` must be a literal ISO-8601 timestamp; never write shell syntax such as `$(date -u ...)`
 - `evidence_urls` must be non-empty for searched rows
 - `evidence_source_types` must be non-empty for searched rows
+- `evidence_urls` and `evidence_source_types` are pipe-list fields, not JSON-list fields; for no-search skip rows leave them blank instead of writing `[]`
 - `confidence` must be `high`, `medium`, or `low`
 
 Capability interpretation rules:

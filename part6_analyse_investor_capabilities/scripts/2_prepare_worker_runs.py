@@ -310,7 +310,21 @@ def render_worker_base_instructions(
     for key, value in mapping.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", value)
     search_guarantee_markers = [str(batch_file), str(run_dir)]
-    if any("rerun_manual_fallbacks" in marker for marker in search_guarantee_markers):
+    full_search_rerun = any(
+        "full_search_rerun" in marker or "skip_rule_full_rerun" in marker
+        for marker in search_guarantee_markers
+    )
+    if full_search_rerun:
+        rendered = (
+            f"{rendered.rstrip()}\n\n"
+            "Full-search rerun override for prior skip-rule violations:\n"
+            "- This rerun exists because prior rows used `search_tier = skip_candidate` despite non-low likelihood signals.\n"
+            "- Every investor in this batch must use `search_tier = full` and `capability_search_required = yes`.\n"
+            "- Do not use `search_tier = skip_candidate` or `search_tier = light` for any row in this rerun batch.\n"
+            "- A no-capability conclusion is allowed only after full current-source search with non-empty absolute HTTP(S) `evidence_urls` and valid `evidence_source_types`.\n"
+            "- Copy `task_index`, `investor_id`, `investor_name`, `normalized_domain`, and `primary_investor_type` exactly from `tasks.jsonl`.\n"
+        )
+    elif any("rerun_manual_fallbacks" in marker for marker in search_guarantee_markers):
         rendered = (
             f"{rendered.rstrip()}\n\n"
             "Search-guarantee override for previously manual-fallback batches:\n"

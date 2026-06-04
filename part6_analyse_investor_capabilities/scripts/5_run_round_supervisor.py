@@ -46,6 +46,7 @@ DEFAULT_SPLIT_BATCH_RESPAWN_THRESHOLD = 5
 DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 3
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
 DEFAULT_WORKER_SANDBOX = "danger-full-access"
+DEFAULT_WORKER_MODEL = "gpt-5.4-mini"
 DEFAULT_SPLIT_SHARD_SIZE = 15
 DEFAULT_SPLIT_SHARD_COUNT = 2
 SPLIT_BATCH_LAUNCH_REASON = "split_batch_2x15"
@@ -1116,6 +1117,8 @@ def spawn_worker(
         f"Read {instructions_file} and execute it fully. "
         "Obey its write scope and output paths exactly."
     )
+    model = os.environ.get("PART6_WORKER_MODEL") or launch_row.get("model") or DEFAULT_WORKER_MODEL
+    reasoning_effort = os.environ.get("PART6_REASONING_EFFORT") or launch_row.get("reasoning_effort") or ""
     cmd = [
         codex_bin,
         "-a",
@@ -1125,7 +1128,12 @@ def spawn_worker(
         "--skip-git-repo-check",
         "--ephemeral",
         "-m",
-        launch_row.get("model") or "gpt-5.4-mini",
+        model,
+        *(
+            ["-c", f'model_reasoning_effort="{reasoning_effort}"']
+            if reasoning_effort
+            else []
+        ),
         "-s",
         DEFAULT_WORKER_SANDBOX,
         "--json",
@@ -1153,6 +1161,8 @@ def spawn_worker(
         "batch_file": launch_row.get("batch_file", ""),
         "attempt_index": parse_int(launch_row.get("attempt_index"), 0),
         "lease_id": launch_row.get("lease_id", ""),
+        "model": model,
+        "reasoning_effort": reasoning_effort,
         "instructions_file": str(instructions_file),
         "log_path": str(log_path),
         "final_message_path": str(final_message_path),

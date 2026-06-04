@@ -463,6 +463,14 @@ def canonicalize_identity_fields(
                 f"normalized_domain overridden from {actual_domain!r} to {expected_domain!r}"
             )
         normalized["normalized_domain"] = expected_domain
+    if "primary_investor_type" in normalized:
+        expected_type = str(task.get("primary_investor_type", normalized.get("primary_investor_type", "")))
+        actual_type = str(normalized.get("primary_investor_type", ""))
+        if actual_type != expected_type:
+            changes.append(
+                f"primary_investor_type overridden from {actual_type!r} to {expected_type!r}"
+            )
+        normalized["primary_investor_type"] = expected_type
     record_identity_override(
         tracker=tracker,
         source=source,
@@ -1008,6 +1016,10 @@ def repair_shifted_result_row(row: dict[str, str]) -> dict[str, str]:
         repaired["evidence_source_types"] = (repaired.get("needs_manual_review") or "").strip()
         repaired["needs_manual_review"] = "yes"
 
+    for column in ["evidence_urls", "evidence_source_types"]:
+        if (repaired.get(column) or "").strip() == "[]":
+            repaired[column] = ""
+
     for column in LIST_COLUMNS:
         repaired[column] = normalize_json_list_string(repaired.get(column, ""))
     for column in CAPABILITY_FLAG_COLUMNS:
@@ -1090,16 +1102,32 @@ def validate_result_row(row: dict[str, str], source: Path) -> list[str]:
         errors.append("needs_manual_review must be yes or no")
     if row.get("confidence") not in ALLOWED_CONFIDENCE:
         errors.append("confidence must be high, medium, or low")
+    completed_at = (row.get("completed_at") or "").strip()
+    if not completed_at:
+        errors.append("completed_at is blank")
+    if "$(" in completed_at or "`" in completed_at or "date -u" in completed_at:
+        errors.append("completed_at must be a literal timestamp, not shell syntax")
     if row.get("search_tier") in {"full", "light"} and row.get("capability_search_required") != "yes":
         errors.append("full/light search_tier requires capability_search_required=yes")
     if row.get("search_tier") == "skip_candidate" and row.get("capability_search_required") != "no":
         errors.append("skip_candidate requires capability_search_required=no")
+    if row.get("search_tier") == "skip_candidate" and (
+        row.get("crypto_native_likelihood") in {"high", "medium", "unclear"}
+        or row.get("operating_capability_likelihood") in {"high", "medium", "unclear"}
+    ):
+        errors.append("skip_candidate cannot have high, medium, or unclear likelihood")
     if row.get("capability_search_required") == "no" and not (row.get("capability_search_reason") or "").strip():
         errors.append("capability_search_required=no requires capability_search_reason")
     for column in CAPABILITY_FLAG_COLUMNS:
         if row.get(column) not in ALLOWED_YES_NO:
             errors.append(f"{column} must be yes or no")
     evidence_summary = (row.get("evidence_summary") or "").strip()
+    evidence_urls_raw = (row.get("evidence_urls") or "").strip()
+    evidence_source_types_raw = (row.get("evidence_source_types") or "").strip()
+    if evidence_urls_raw == "[]":
+        errors.append("evidence_urls must be blank or pipe-separated HTTP(S) URLs, not a JSON array literal")
+    if evidence_source_types_raw == "[]":
+        errors.append("evidence_source_types must be blank or pipe-separated source labels, not a JSON array literal")
     evidence_urls = split_pipe_list(row.get("evidence_urls", ""))
     evidence_source_types = split_pipe_list(row.get("evidence_source_types", ""))
     if not evidence_summary:
@@ -1164,7 +1192,10 @@ def validate_classifier_row(row: dict[str, str], source: Path) -> list[str]:
         errors.append("full/light search_tier requires capability_search_required=yes")
     if search_tier == "skip_candidate" and capability_search_required != "no":
         errors.append("skip_candidate requires capability_search_required=no")
-    if search_tier == "skip_candidate" and row.get("crypto_native_likelihood") in {"high", "medium", "unclear"}:
+    if search_tier == "skip_candidate" and (
+        row.get("crypto_native_likelihood") in {"high", "medium", "unclear"}
+        or row.get("operating_capability_likelihood") in {"high", "medium", "unclear"}
+    ):
         errors.append("skip_candidate cannot have high, medium, or unclear likelihood")
     risk_flags = (row.get("risk_flags") or "").strip()
     if not risk_flags:
@@ -1222,7 +1253,16 @@ def collect_classifier_rows(
                 duplicate_task_indexes.add(task_index)
             seen_task_indexes.add(task_index)
             validation_errors.extend(validate_classifier_row(row, classifier_csv))
-            if requires_search_guarantee(schedule_row):
+            if requires_full_search(schedule_row):
+                if row.get("search_tier") != "full":
+                    validation_errors.append(
+                        f"{classifier_csv}: task_index={task_index}: full-search rerun batches require search_tier=full"
+                    )
+                if row.get("capability_search_required") != "yes":
+                    validation_errors.append(
+                        f"{classifier_csv}: task_index={task_index}: full-search rerun batches require capability_search_required=yes"
+                    )
+            elif requires_search_guarantee(schedule_row):
                 if row.get("search_tier") == "skip_candidate":
                     validation_errors.append(
                         f"{classifier_csv}: task_index={task_index}: search-guarantee rerun batches forbid search_tier=skip_candidate"
@@ -1297,7 +1337,21 @@ def requires_search_guarantee(schedule_row: dict[str, str]) -> bool:
         str(schedule_row.get("run_dir") or ""),
         str(schedule_row.get("tasks_file") or ""),
     ]
-    return any("rerun_manual_fallbacks" in marker for marker in markers)
+    return any(
+        "rerun_manual_fallbacks" in marker
+        or "full_search_rerun" in marker
+        or "skip_rule_full_rerun" in marker
+        for marker in markers
+    )
+
+
+def requires_full_search(schedule_row: dict[str, str]) -> bool:
+    markers = [
+        str(schedule_row.get("batch_file") or ""),
+        str(schedule_row.get("run_dir") or ""),
+        str(schedule_row.get("tasks_file") or ""),
+    ]
+    return any("full_search_rerun" in marker or "skip_rule_full_rerun" in marker for marker in markers)
 
 
 def collect_worker_rows(
@@ -1337,7 +1391,16 @@ def collect_worker_rows(
                 duplicate_task_indexes.add(task_index)
             seen_task_indexes.add(task_index)
             validation_errors.extend(validate_result_row(row, results_csv))
-            if requires_search_guarantee(schedule_row) and row.get("capability_search_required") != "yes":
+            if requires_full_search(schedule_row):
+                if row.get("search_tier") != "full":
+                    validation_errors.append(
+                        f"{results_csv}: task_index={task_index}: full-search rerun batches require search_tier=full"
+                    )
+                if row.get("capability_search_required") != "yes":
+                    validation_errors.append(
+                        f"{results_csv}: task_index={task_index}: full-search rerun batches require capability_search_required=yes"
+                    )
+            elif requires_search_guarantee(schedule_row) and row.get("capability_search_required") != "yes":
                 validation_errors.append(
                     f"{results_csv}: task_index={task_index}: search-guarantee rerun batches require capability_search_required=yes"
                 )
@@ -1678,7 +1741,7 @@ def rewrite_identity_fields_in_place(schedule_rows: list[dict[str, str]]) -> lis
                 updated = dict(row)
                 if index < len(tasks):
                     task = tasks[index]
-                    for field in ["task_index", "investor_id", "investor_name"]:
+                    for field in ["task_index", "investor_id", "investor_name", "primary_investor_type"]:
                         expected = str(task.get(field, updated.get(field, "")))
                         if str(updated.get(field, "")) != expected:
                             changed = True

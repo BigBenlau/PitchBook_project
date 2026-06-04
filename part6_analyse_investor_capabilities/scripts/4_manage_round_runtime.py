@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -300,7 +301,21 @@ def requires_search_guarantee(row: dict[str, str]) -> bool:
         str(row.get("run_dir") or ""),
         str(row.get("tasks_file") or ""),
     ]
-    return any("rerun_manual_fallbacks" in marker for marker in markers)
+    return any(
+        "rerun_manual_fallbacks" in marker
+        or "full_search_rerun" in marker
+        or "skip_rule_full_rerun" in marker
+        for marker in markers
+    )
+
+
+def requires_full_search(row: dict[str, str]) -> bool:
+    markers = [
+        str(row.get("batch_file") or ""),
+        str(row.get("run_dir") or ""),
+        str(row.get("tasks_file") or ""),
+    ]
+    return any("full_search_rerun" in marker or "skip_rule_full_rerun" in marker for marker in markers)
 
 
 def canonical_failure_reason_tokens(reason: str) -> list[str]:
@@ -780,7 +795,17 @@ def render_worker_base_instructions(row: dict[str, str], tasks: list[dict[str, A
     rendered = load_worker_base_template()
     for key, value in mapping.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", value)
-    if requires_search_guarantee(row):
+    if requires_full_search(row):
+        rendered = (
+            f"{rendered.rstrip()}\n\n"
+            "Full-search rerun override for prior skip-rule violations:\n"
+            "- This rerun exists because prior rows used `search_tier = skip_candidate` despite non-low likelihood signals.\n"
+            "- Every investor in this batch must use `search_tier = full` and `capability_search_required = yes`.\n"
+            "- Do not use `search_tier = skip_candidate` or `search_tier = light` for any row in this rerun batch.\n"
+            "- A no-capability conclusion is allowed only after full current-source search with non-empty absolute HTTP(S) `evidence_urls` and valid `evidence_source_types`.\n"
+            "- Copy `task_index`, `investor_id`, `investor_name`, `normalized_domain`, and `primary_investor_type` exactly from `tasks.jsonl`.\n"
+        )
+    elif requires_search_guarantee(row):
         rendered = (
             f"{rendered.rstrip()}\n\n"
             "Search-guarantee override for previously manual-fallback batches:\n"
@@ -895,6 +920,9 @@ def render_attempt_instruction(
         "- Write incrementally. Append rows as soon as each investor is completed.\n"
         "- Before the first completed investor is written, do not scan `manifest.csv`, prior `verification_findings.csv`, prior final outputs, or unrelated batch directories.\n"
         "- Before 2 completed investors are written, keep auxiliary lookups narrowly scoped to the current investor unless a specific ambiguity requires more.\n"
+        "- Schema guard: never write `search_tier = skip_candidate` with `crypto_native_likelihood` or `operating_capability_likelihood` equal to `high`, `medium`, or `unclear`; use `light` or `full` when either likelihood is not `none`/`low`.\n"
+        "- Schema guard: JSON-list fields must be written through a CSV writer or otherwise correctly quoted so embedded commas cannot split columns.\n"
+        "- Schema guard: `completed_at` must be a literal ISO-8601 timestamp, not shell syntax; `evidence_urls` and `evidence_source_types` are pipe-list fields, so use blank rather than `[]` for no-search skip rows.\n"
         "- The harness watches startup no-row and partial-stall conditions. Lack of row growth may cause this attempt to be terminated.\n\n"
         f"{WRAPPER_BEGIN}\n\n"
         f"{base_instruction_text.rstrip()}\n\n"
@@ -1093,6 +1121,8 @@ def launch_start_index(attempt_mode: str, inspection: dict[str, Any]) -> int:
 
 def build_launch_row(row: dict[str, str], inspection: dict[str, Any], policy: dict[str, Any]) -> dict[str, str]:
     rule = choose_escalation(row, policy)
+    model = os.environ.get("PART6_WORKER_MODEL") or str(rule.get("model", "gpt-5.4-mini"))
+    reasoning_effort = os.environ.get("PART6_REASONING_EFFORT") or str(rule.get("reasoning_effort", "medium"))
     attempt_mode = row.get("prepared_mode") or derive_attempt_mode(str(rule.get("preferred_attempt_mode", "fresh_full_batch")), inspection)
     start_index = launch_start_index(attempt_mode, inspection)
     tasks = inspection["tasks"]
@@ -1110,8 +1140,8 @@ def build_launch_row(row: dict[str, str], inspection: dict[str, Any], policy: di
         "attempt_index": row["attempt_index"],
         "lease_id": row.get("lease_id", ""),
         "attempt_mode": attempt_mode,
-        "model": str(rule.get("model", "gpt-5.4-mini")),
-        "reasoning_effort": str(rule.get("reasoning_effort", "medium")),
+        "model": model,
+        "reasoning_effort": reasoning_effort,
         "task_count": row["task_count"],
         "start_task_index": start_task_index,
         "start_company": start_company,

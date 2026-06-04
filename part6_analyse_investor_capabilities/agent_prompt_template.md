@@ -32,14 +32,15 @@ Do not do:
 1. Read `Plan.md`.
 2. Read the assigned investor row.
 3. Determine why the row appears in the Part5-to-Part6 investor graph batch. Use `MatchedKeywords`, `MatchedColumns`, and `InvestorCapabilityContext` to understand the token-company relationship path.
-4. Fill `primary_investor_type`, `investor_archetype`, `crypto_native_likelihood`, `operating_capability_likelihood`, `search_tier`, `capability_search_required`, `risk_flags`, and `classifier_reason`.
-5. Write the classifier row.
-6. If `search_tier = skip_candidate`, write a completed result row with all six capability flags = `no`, `capability_labels = []`, and a clear `capability_search_reason`.
-7. If `search_tier = light`, run bounded local-first plus web-confirmation probes.
-8. If `search_tier = full`, search more broadly with primary-source priority.
-9. Write one result row per investor.
-10. Keep `capability_labels` synchronized with the six boolean capability columns.
-11. If evidence conflicts or the label boundary is genuinely ambiguous, set `needs_manual_review = yes`.
+4. Copy `task_index`, `investor_id`, `investor_name`, `normalized_domain`, and `primary_investor_type` exactly from the top-level task fields. Do not infer, normalize, or replace these input metadata values.
+5. Fill `investor_archetype`, `crypto_native_likelihood`, `operating_capability_likelihood`, `search_tier`, `capability_search_required`, `risk_flags`, and `classifier_reason`.
+6. Write the classifier row.
+7. If `search_tier = skip_candidate`, write a completed result row with all six capability flags = `no`, `capability_labels = []`, and a clear `capability_search_reason`.
+8. If `search_tier = light`, run bounded local-first plus web-confirmation probes.
+9. If `search_tier = full`, search more broadly with primary-source priority.
+10. Write one result row per investor.
+11. Keep `capability_labels` synchronized with the six boolean capability columns.
+12. If evidence conflicts or the label boundary is genuinely ambiguous, set `needs_manual_review = yes`.
 
 ## Classification Rules
 
@@ -75,6 +76,7 @@ Allowed `capability_search_required` values:
 Hard rules:
 - `full` or `light` requires `capability_search_required = yes`
 - `skip_candidate` requires `capability_search_required = no`
+- `skip_candidate` requires both `crypto_native_likelihood` and `operating_capability_likelihood` to be `none` or `low`; if either likelihood is `high`, `medium`, or `unclear`, use `light` or `full` instead
 - if the row or official site contains OTC / liquidity / market making / execution / routing / brokerage / quant / DeFi / feeder / umbrella / SPV / fund-of-funds language, do not use `skip_candidate`
 
 ## Capability Rules
@@ -108,7 +110,10 @@ task_index,investor_id,investor_name,normalized_domain,primary_investor_type,inv
 Rules:
 - `risk_flags`, `other_flags`, and `capability_labels` must be JSON list strings
 - `capability_labels` must exactly equal the list of capability columns whose value is `yes`
+- any `search_tier = skip_candidate` row must have `capability_search_required = no`, all six capability columns set to `no`, `capability_labels = []`, and both likelihood columns set to `none` or `low`
 - `status` should be `completed`
+- `completed_at` must be a literal ISO-8601 timestamp; never write shell syntax such as `$(date -u ...)`
 - `evidence_urls` should use `|`-separated absolute HTTP(S) URLs
 - `evidence_source_types` should use `|`-separated lowercase source labels
+- `evidence_urls` and `evidence_source_types` are pipe-list fields, not JSON-list fields; for no-search skip rows leave them blank instead of writing `[]`
 - `confidence` must be `high`, `medium`, or `low`
