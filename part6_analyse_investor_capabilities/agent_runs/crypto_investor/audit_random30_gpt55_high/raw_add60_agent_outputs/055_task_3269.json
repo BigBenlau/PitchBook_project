@@ -1,0 +1,14 @@
+{
+  "task_index": "3269",
+  "investor_id": "439806-88",
+  "investor_name": "UniLend Finance",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "yes", "execution_services": "yes", "defi": "yes", "sub_fund": "no"},
+  "capability_labels": ["market_making", "execution_services", "defi"],
+  "evidence_urls": ["https://unilend.finance/", "https://unilend.gitbook.io/unilend-finance", "https://unilend.gitbook.io/unilend-finance/unilend-v1/the-protocol/faq", "https://unilend.gitbook.io/unilend-finance/omnis-code"],
+  "evidence_source_types": ["official_site", "official_docs", "official_docs", "official_docs"],
+  "evidence_summary": "UniLend's official site and docs describe UniLend as a permissionless decentralized finance protocol for lending and borrowing ERC20 assets, with official documentation also describing spot trading services, decentralized trading functionality, trading pairs, and liquidity pools where liquidity providers receive fees. Official V2 documentation describes dual-asset lending pools, borrowing, lending, liquidation, and flashloan functions. I found no explicit evidence that UniLend operates an OTC desk, block or bilateral trading service, algorithmic/quantitative/HFT trading, or any sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds structure.",
+  "yes_boundaries": ["defi=yes because UniLend itself officially operates and markets a DeFi-native permissionless lending and borrowing protocol.", "execution_services=yes because UniLend's official docs explicitly describe spot trading services, decentralized trading functionality, and in-platform trading pairs, which meets the DEX/exchange/swap venue execution-services boundary.", "market_making=yes because UniLend's official docs describe liquidity pools and liquidity provision with fees within the UniLend protocol, meeting the AMM/liquidity-pool liquidity provision threshold for an operated DeFi protocol."],
+  "no_boundaries": ["otc_trading=no because spot trading and DEX-style trading functionality are not explicit OTC desk, block trading, or bilateral trading evidence.", "algorithm_trading=no because smart contracts, governance, liquidations, and intent-driven transaction infrastructure are not explicit algorithmic, quantitative, systematic, HFT, or low-latency trading evidence.", "sub_fund=no because UniLend is described as a DeFi protocol/company, not as a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds."],
+  "confidence": "high",
+  "recommended_manual_review": "no"
+}

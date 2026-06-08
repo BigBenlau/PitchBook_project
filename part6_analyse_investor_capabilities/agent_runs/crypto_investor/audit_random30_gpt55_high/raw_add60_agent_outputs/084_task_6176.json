@@ -1,0 +1,14 @@
+{
+  "task_index": "6176",
+  "investor_id": "399223-81",
+  "investor_name": "Anton Generalov",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "no", "defi": "no", "sub_fund": "no"},
+  "capability_labels": [],
+  "evidence_urls": ["https://www.industrial-investors.com/team/", "https://www.industrial-investors.com/", "https://signal.nfx.com/investors/anton-generalov", "https://askforfunding.com/investor/anton-generalov-angel-investor"],
+  "evidence_source_types": ["official_site", "official_site", "secondary_profile", "secondary_profile"],
+  "evidence_summary": "Official Industrial Investors pages identify Anton Generalov as a Managing Director involved in portfolio-company development, FESCO public-markets strategy, and Dexter Air Taxi board leadership, while describing Industrial Investors as a private equity and venture capital investor providing long-term equity capital. Secondary investor profiles describe him as an angel investor with startup investments including Propy and a blockchain/early-stage software focus. I found no public evidence that Anton Generalov or his attributable operating platform offers OTC/block trading, algorithmic or systematic trading, market making, execution/order-routing/brokerage services, DeFi-native products, or sub-fund/feeder/umbrella/SPV/fund-platform capabilities.",
+  "yes_boundaries": [],
+  "no_boundaries": ["Industrial Investors' official phrase 'data-driven analytical approach' appears to describe private-equity diligence and value creation, not algorithmic, quantitative, systematic, HFT, or low-latency trading.", "Anton Generalov's blockchain interest and Propy investment do not show that he operates or markets DeFi-native capability; funding a blockchain startup alone is insufficient for defi=yes.", "Participation in FESCO public-markets strategy is not evidence of OTC trading, execution services, market making, or algorithmic trading.", "References to Industrial Investors' investment activity and ordinary fund naming are not evidence of a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds structure."],
+  "confidence": "medium",
+  "recommended_manual_review": "no"
+}

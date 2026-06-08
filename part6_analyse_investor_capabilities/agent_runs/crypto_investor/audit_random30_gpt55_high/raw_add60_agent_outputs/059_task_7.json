@@ -1,0 +1,14 @@
+{
+  "task_index": "7",
+  "investor_id": "232671-70",
+  "investor_name": "LD Capital",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "yes", "execution_services": "no", "defi": "no", "sub_fund": "yes"},
+  "capability_labels": ["market_making", "sub_fund"],
+  "evidence_urls": ["https://ldcap.asia/", "https://ld-capital.medium.com/ld-capital-antalpha-ventures-and-highblock-announced-the-launch-of-hong-kongs-first-1-billion-0afe90c0bac3"],
+  "evidence_source_types": ["official_site", "news_or_blog"],
+  "evidence_summary": "LD Capital's official site describes it as a crypto fund investing and trading in primary and secondary markets and explicitly states that its sub-funds include Beco Fund, FoF, hedge fund, Meta Fund, etc. A post by LD Capital says LD Capital, Antalpha Ventures, and Highblock jointly established a Hong Kong ETF liquidity fund designed to provide market-making services to Hong Kong ETFs. I found no explicit evidence that LD Capital itself offers OTC/block/bilateral trading, algorithmic/systematic/HFT trading, execution/order-routing/brokerage services, or a DeFi-native operating product beyond investing in DeFi portfolio companies.",
+  "yes_boundaries": ["market_making=yes because LD Capital's own announcement says a jointly established ETF liquidity fund is designed to provide market-making services to Hong Kong ETFs.", "sub_fund=yes because LD Capital's official site explicitly says its sub-funds include Beco Fund, FoF, hedge fund, Meta Fund, etc."],
+  "no_boundaries": ["Primary and secondary market trading language is not explicit OTC desk, block trading, or bilateral trading evidence.", "Highblock's quantitative trading expertise in the joint ETF liquidity fund announcement was not attributed directly to LD Capital as LD Capital's own algorithmic trading capability.", "The ETF liquidity fund evidence supports market-making, but it does not explicitly describe LD Capital providing execution, smart order routing, brokerage, prime brokerage, or order-routing services.", "LD Capital markets DeFi investments and has DeFi portfolio exposure, but funding or listing DeFi startups alone is insufficient for defi=yes under the rule."],
+  "confidence": "medium",
+  "recommended_manual_review": "yes"
+}

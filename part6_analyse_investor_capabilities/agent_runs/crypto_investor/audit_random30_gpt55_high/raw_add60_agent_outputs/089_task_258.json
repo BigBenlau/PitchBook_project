@@ -1,0 +1,14 @@
+{
+  "task_index": "258",
+  "investor_id": "467123-05",
+  "investor_name": "7 O'clock Capital",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "no", "defi": "yes", "sub_fund": "no"},
+  "capability_labels": ["defi"],
+  "evidence_urls": ["https://7oclockcapital.medium.com/7-oclock-capital-s-investment-idavoll-network-dao-platform-partners-with-huawei-cloud-1395dd542912", "https://7oclockcapital.medium.com/7-oclock-capital-%E9%A1%B6%E7%BA%A7%E6%8A%95%E8%B5%84%E6%9C%BA%E6%9E%84%E6%84%BF%E6%84%8F%E9%99%AA%E4%BC%B4%E9%A1%B9%E7%9B%AE%E9%95%BF%E6%9C%9F%E6%88%90%E9%95%BF-e5d122b263b", "https://vcinvest.com/company/7-oclock-capital"],
+  "evidence_source_types": ["news_or_blog", "news_or_blog", "secondary_profile"],
+  "evidence_summary": "7 O'Clock Capital's own Medium posts describe it as a crypto asset venture fund focused on DeFi, accelerating early-stage DeFi projects, nurturing the DeFi ecosystem worldwide, and having established a DeFi+DAO ecosystem fund. A secondary VC profile similarly describes it as a DeFi-focused crypto asset venture fund. I found no attributable evidence that 7 O'Clock Capital itself operates OTC/block trading, algorithmic or quantitative trading, market making/liquidity provision, execution/order routing/brokerage services, or a sub-fund/feeder/umbrella/parallel/SPV/fund-of-funds platform.",
+  "yes_boundaries": ["defi=yes because the investor itself explicitly markets a DeFi focus and DeFi ecosystem activity, not merely isolated investments in DeFi portfolio companies."],
+  "no_boundaries": ["Mentions of providing a launchpad, boosting digital-asset liquidity, or supporting blockchain projects are not explicit execution services, order routing, brokerage, OTC, or market-making evidence for 7 O'Clock Capital.", "A 7 O'Clock Community AMA with Black Ocean discusses dark pools and liquidity, but those capabilities belong to the guest/project and are not attributable to 7 O'Clock Capital.", "The DeFi+DAO ecosystem fund language supports DeFi specialization but does not explicitly indicate a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds structure."],
+  "confidence": "medium",
+  "recommended_manual_review": "no"
+}

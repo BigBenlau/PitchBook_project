@@ -1,0 +1,14 @@
+{
+  "task_index": "6852",
+  "investor_id": "509667-94",
+  "investor_name": "Brainforest",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "no", "defi": "no", "sub_fund": "no"},
+  "capability_labels": [],
+  "evidence_urls": ["https://brainforest.global/venture-program", "https://www.nandoandelsaperettifoundation.org/projects/supporting-brainforests-evolution-as-a-nature-venture-platform/", "https://ch.linkedin.com/company/brainforest"],
+  "evidence_source_types": ["official_site", "secondary_profile", "secondary_profile"],
+  "evidence_summary": "Brainforest is presented as a Zurich-based nature, forest and biodiversity venture platform/accelerator that provides coaching, network access, and selected financial support to early-stage ventures. Public evidence describes venture programs, catalytic impact investment capital, and the Canopy Pool as a forest-focused impact investment mechanism, but does not show Brainforest operating OTC trading, algorithmic trading, market making, execution/brokerage services, DeFi-native products, or any explicit sub-fund/feeder/umbrella/parallel fund/SPV/fund-of-funds structure.",
+  "yes_boundaries": [],
+  "no_boundaries": ["AI and data appear as biodiversity and nature-intelligence focus areas, not algorithmic, quantitative, systematic, HFT, or low-latency trading.", "Network access, market access, and investor convening in the accelerator context are not brokerage, smart order routing, order routing, prime brokerage, liquidity access, or trade execution services.", "Mentions of monetizing biodiversity, financing mechanisms, blended finance, and Canopy Pool do not evidence OTC trading, market making, DeFi-native operation, or explicit sub-fund/feeder/umbrella/parallel fund/SPV/fund-of-funds capability.", "Funding or supporting startups in nature, biodiversity, regenerative agriculture, and climate does not confer portfolio-company capabilities to Brainforest."],
+  "confidence": "high",
+  "recommended_manual_review": "no"
+}

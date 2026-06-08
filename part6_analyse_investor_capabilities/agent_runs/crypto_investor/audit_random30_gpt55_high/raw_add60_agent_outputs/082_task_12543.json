@@ -1,0 +1,14 @@
+{
+  "task_index": "12543",
+  "investor_id": "483168-52",
+  "investor_name": "Sportzchain",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "yes", "defi": "yes", "sub_fund": "no"},
+  "capability_labels": ["execution_services", "defi"],
+  "evidence_urls": ["https://sportzchain.com/faq/", "https://sportzchain.com/about/", "https://sportzchain.com/spn-token-page/", "https://coinmarketcap.com/currencies/sportzchain/"],
+  "evidence_source_types": ["official_site", "official_site", "official_site", "secondary_profile"],
+  "evidence_summary": "Sportzchain's official FAQ describes an operated fan-token platform where $SPN enables users to buy and sell sports/fan tokens, and says fans can buy and sell those tokens on Sportzchain's platform. Its official about page describes a web3 sports app, sports tokens, NFTs, GameFi, watch-to-earn, staking rewards, a planned proprietary exchange for trading sports tokens, and DeFi programs. Its official token page markets $SPN staking rewards. CoinMarketCap similarly describes Sportzchain as an engage-to-earn webDapp with buying sports tokens, staking APY, NFTs, GameFi, and fan-token redemption. I found no explicit evidence for OTC/block trading, algorithmic/quant/systematic trading, market making/liquidity provision, or sub-fund/feeder/SPV/fund-platform activity.",
+  "yes_boundaries": ["execution_services crosses the threshold because Sportzchain itself operates or markets a token platform/venue where users can buy and sell sports/fan tokens; exchange or swap venues can support execution_services under the boundary rule.", "defi crosses the threshold because Sportzchain itself markets DeFi-native/token product exposure including $SPN staking rewards and explicitly references DeFi programs on its official site."],
+  "no_boundaries": ["The evidence mentions token trading and external exchange listings, but not an OTC desk, block trading, or bilateral trading by Sportzchain.", "The evidence mentions blockchain, web3, fan tokens, and staking, but not algorithmic, quantitative, systematic, HFT, or low-latency trading.", "The evidence mentions tokenomics liquidity allocation and buy/burn language, but not explicit market making, liquidity provision, AMM operation, or liquidity pools operated by Sportzchain.", "The evidence shows a company token platform and investor/partner references, but no sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds structure."],
+  "confidence": "medium",
+  "recommended_manual_review": "yes"
+}
