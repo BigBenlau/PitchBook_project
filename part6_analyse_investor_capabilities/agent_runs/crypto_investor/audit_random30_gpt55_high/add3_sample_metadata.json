@@ -1,0 +1,26 @@
+[
+  {
+    "sample_order": 91,
+    "task_index": 94,
+    "investor_id": "489999-25",
+    "investor_name": "Jump Crypto",
+    "stratum": "targeted_addition",
+    "targeted_reason": "user_requested_jump_trading_jump_crypto_wintermute_comparison"
+  },
+  {
+    "sample_order": 92,
+    "task_index": 1030,
+    "investor_id": "93372-85",
+    "investor_name": "Jump Trading",
+    "stratum": "targeted_addition",
+    "targeted_reason": "user_requested_jump_trading_jump_crypto_wintermute_comparison"
+  },
+  {
+    "sample_order": 93,
+    "task_index": 378,
+    "investor_id": "431600-95",
+    "investor_name": "Wintermute",
+    "stratum": "targeted_addition",
+    "targeted_reason": "user_requested_jump_trading_jump_crypto_wintermute_comparison"
+  }
+]

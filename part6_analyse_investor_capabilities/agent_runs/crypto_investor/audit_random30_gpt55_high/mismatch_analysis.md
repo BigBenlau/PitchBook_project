@@ -1,14 +1,14 @@
-# Part6 Random-90 Audit - Mismatch Analysis
+# Part6 Random-93 Audit - Mismatch Analysis
 
 ## Summary
 
-- generated_at_utc: 2026-06-08T11:27:55.260665+00:00
-- Mismatch companies: 48/90
-- Capability-level mismatches: 82
-- Results.csv likely under-labeled capabilities in the audit comparison: 77 capability decisions
+- generated_at_utc: 2026-06-08T14:13:21.237960+00:00
+- Mismatch companies: 50/93
+- Capability-level mismatches: 89
+- Results.csv likely under-labeled capabilities in the audit comparison: 84 capability decisions
 - Results.csv likely over-labeled capabilities in the audit comparison: 5 capability decisions
 - Mismatch companies already in `needs_manual_review.csv`: 8
-- Mismatch companies not in `needs_manual_review.csv`: 40
+- Mismatch companies not in `needs_manual_review.csv`: 42
 - Clear classifier routing concern: 3 rows
 
 This file explains why each row was judged inconsistent. The comparison scope is only the six investor capability flags: `otc_trading`, `algorithm_trading`, `market_making`, `execution_services`, `defi`, and `sub_fund`.
@@ -825,3 +825,37 @@ Audit Yes boundary notes: execution_services=yes because Bixin.com documentation
 Audit No / near-miss notes: otc_trading=no because the evidence mentions OTC lending and off-platform trading without an order book, but I did not find explicit OTC desk, block trading, or bilateral OTC trading operated by Bixin Ventures.|algorithm_trading=no because references to quant funds, arbitrage, CTA, and trend strategies relate to external funds or personnel history, not Bixin Ventures operating algorithmic, quantitative, systematic, HFT, or low-latency trading.|market_making=no because Bixin.com documents independent third-party market makers/liquidity providers and the fund-of-funds supports liquidity providers, but that is not enough to show Bixin Ventures itself provides market making.
 
 Interpretation: this looks like fund-structure evidence not carried into sub_fund. The row should be reviewed if that boundary is not intended by the final Part6 policy.
+
+## 49. Jump Crypto - task 94
+
+- In `needs_manual_review.csv`: no
+- Results labels: `["algorithm_trading"]`
+- Audit labels: `["algorithm_trading", "market_making", "execution_services", "defi"]`
+- Mismatched capability decisions: 漏標 `market_making`, 漏標 `execution_services`, 漏標 `defi`
+
+The inconsistency is `market_making|execution_services|defi`. Original results evidence says: Jump Crypto describes itself as the crypto division of Jump Trading Group and frames its work around active participation in crypto markets and trading intelligence.
+
+The independent audit judged differently because: Jump Crypto's official materials describe it as an active crypto market participant, liquidity provider, and builder of DeFi/onchain market infrastructure. Its PropAMM article describes BisonFi as Jump Crypto's own PropAMM, with an offchain pricing engine, onchain execution program, executable bids/offers, continuous repricing, and market-making logic. Jump Trading's official pages also support the attributable operating-platform context: the parent trades digital assets and uses high-frequency/stat-arb strategies plus ML-driven low-latency trading systems. I found no explicit Jump Crypto OTC desk, block/bilateral trading service, or sub-fund/feeder/SPV/fund-platform evidence.
+
+Audit Yes boundary notes: algorithm_trading=yes because official Jump Crypto PropAMM materials describe continuous offchain pricing models, frequent oracle updates, proprietary logic, and executable onchain liquidity; Jump Trading's official trading pages also explicitly reference high-frequency and stat-arb strategies across digital assets.|market_making=yes because Jump Crypto explicitly says it is an active market participant and liquidity provider on Serum, and its PropAMM article describes market-making logic in its own BisonFi system.|execution_services=yes because BisonFi/PropAMM is described as an onchain execution program providing executable bids and offers where user swaps settle directly against onchain liquidity.|defi=yes because Jump Crypto's official materials explicitly frame its work around DeFi, onchain AMMs, Serum, Pyth, Wormhole, and permissionless market-structure infrastructure, not merely passive investments.
+
+Audit No / near-miss notes: otc_trading=no because active trading, liquidity provision, and direct onchain execution evidence did not include an explicit OTC desk, block trading, or bilateral trading service for Jump Crypto.|sub_fund=no because the official site states Jump Crypto does not operate business lines accepting external investor funds, and no sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds evidence was found.|Portfolio investments in DEXs, AMMs, wallets, exchanges, and DeFi protocols were not used by themselves to infer capabilities.
+
+Interpretation: this looks like narrow DEX/AMM capability mapping. The row should be reviewed if that boundary is not intended by the final Part6 policy.
+
+## 50. Jump Trading - task 1030
+
+- In `needs_manual_review.csv`: no
+- Results labels: `["algorithm_trading"]`
+- Audit labels: `["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"]`
+- Mismatched capability decisions: 漏標 `otc_trading`, 漏標 `market_making`, 漏標 `execution_services`, 漏標 `defi`
+
+The inconsistency is `otc_trading|market_making|execution_services|defi`. Original results evidence says: Official site describes Jump Trading as a global trading firm and its technology stack supporting research trading and data efforts which directly supports algorithmic trading
+
+The independent audit judged differently because: Jump Trading's official trading page says its strategies span high-frequency and stat-arb trading across asset classes, supporting algorithm_trading. Jump Crypto, identified as the crypto division of Jump Trading Group, is described in a company press release as active in trading and market-making activities, and its official materials describe DeFi development, Solana DeFi trading, Pyth/Wormhole/Firedancer infrastructure, and active crypto market participation. Jump Liquidity materials describe a Jump Trading-created business providing clients direct access to Jump principal liquidity, enhanced access to liquidity, and customizable direct counterparty liquidity. Risk.net explicitly reports that Jump Trading launched a bilateral business. No evidence found for a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds capability; Jump Crypto also states it does not accept external investor funds.
+
+Audit Yes boundary notes: algorithm_trading=yes because the official Jump Trading site explicitly describes high-frequency trading strategies.|market_making=yes because Jump Crypto is explicitly described as participating in market-making activities, and Jump Liquidity is described as created by Jump Trading, one of the world's leading market makers.|execution_services=yes because Jump Liquidity is explicitly described as providing direct/enhanced access to Jump principal liquidity and customizable liquidity streams to clients/counterparties.|otc_trading=yes because Risk.net explicitly describes Jump Trading launching a bilateral business, satisfying the bilateral trading threshold.|defi=yes because Jump Crypto is a clearly attributable Jump Trading Group division, and official/company materials explicitly describe DeFi development and trading on Solana DeFi, not merely passive funding of DeFi startups.
+
+Audit No / near-miss notes: sub_fund=no because evidence showed operating trading, liquidity, crypto infrastructure, and venture/investment activity, but no explicit sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds structure.|Portfolio investments in DEXs, AMMs, wallets, and crypto infrastructure were not used by themselves to infer capabilities; DeFi was marked yes only due to Jump Crypto's own stated DeFi activity and infrastructure role.
+
+Interpretation: this looks like narrow OTC-to-execution boundary mapping. The row should be reviewed if that boundary is not intended by the final Part6 policy.

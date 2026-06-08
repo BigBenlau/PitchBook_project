@@ -3,7 +3,7 @@ import ast
 import csv
 import json
 import shutil
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,21 +21,48 @@ CAPS = [
 ROOT = Path(__file__).resolve().parents[4]
 RUN_DIR = ROOT / "part6_analyse_investor_capabilities" / "agent_runs" / "crypto_investor"
 AUDIT_DIR = RUN_DIR / "audit_random30_gpt55_high"
-ADD60_DIR = Path("/tmp/part6_audit_add60_gpt55_high")
-ADD60_OUTPUTS = ADD60_DIR / "agent_outputs"
-ADD60_METADATA = ADD60_DIR / "sample_metadata.json"
+ADD60_TMP_DIR = Path("/tmp/part6_audit_add60_gpt55_high")
+ADD3_TMP_DIR = Path("/tmp/part6_audit_add3_gpt55_high")
+ADD60_OUTPUTS = AUDIT_DIR / "raw_add60_agent_outputs"
+ADD60_METADATA = AUDIT_DIR / "add60_sample_metadata.json"
+ADD3_OUTPUTS = AUDIT_DIR / "raw_add3_agent_outputs"
+ADD3_METADATA = AUDIT_DIR / "add3_sample_metadata.json"
+ADD60_TMP_OUTPUTS = ADD60_TMP_DIR / "agent_outputs"
+ADD60_TMP_METADATA = ADD60_TMP_DIR / "sample_metadata.json"
+ADD3_TMP_OUTPUTS = ADD3_TMP_DIR / "agent_outputs"
+ADD3_TMP_METADATA = ADD3_TMP_DIR / "sample_metadata.json"
 
 ORIGINAL_AUDIT_CSV = AUDIT_DIR / "audit_random30_gpt55_high.csv"
 OUTPUT_CSV = AUDIT_DIR / "audit_random30_gpt55_high.csv"
 OUTPUT_MD = AUDIT_DIR / "audit_random30_gpt55_high.md"
 MISMATCH_MD = AUDIT_DIR / "mismatch_analysis.md"
 ROOT_CAUSE_MD = AUDIT_DIR / "original_label_root_cause.md"
-RAW_COPY_DIR = AUDIT_DIR / "raw_add60_agent_outputs"
 
 RESULTS_CSV = RUN_DIR / "results.csv"
 CLASSIFIER_CSV = RUN_DIR / "classifier_results.csv"
 MANUAL_CSV = RUN_DIR / "needs_manual_review.csv"
 INPUT_CSV = ROOT / "part5_to_part6" / "output" / "part6_investor_input.csv"
+
+BATCHES = [
+    {
+        "name": "add60",
+        "metadata": ADD60_METADATA,
+        "outputs": ADD60_OUTPUTS,
+        "tmp_metadata": ADD60_TMP_METADATA,
+        "tmp_outputs": ADD60_TMP_OUTPUTS,
+        "metadata_copy": AUDIT_DIR / "add60_sample_metadata.json",
+        "outputs_copy": AUDIT_DIR / "raw_add60_agent_outputs",
+    },
+    {
+        "name": "targeted_add3",
+        "metadata": ADD3_METADATA,
+        "outputs": ADD3_OUTPUTS,
+        "tmp_metadata": ADD3_TMP_METADATA,
+        "tmp_outputs": ADD3_TMP_OUTPUTS,
+        "metadata_copy": AUDIT_DIR / "add3_sample_metadata.json",
+        "outputs_copy": AUDIT_DIR / "raw_add3_agent_outputs",
+    },
+]
 
 
 def read_csv_by_task(path):
@@ -117,14 +144,26 @@ def loose_json_load(path):
     raise ValueError(f"Could not parse {path}: {errors[:2]}")
 
 
-def find_agent_json(sample_order, task_index):
-    expected = ADD60_OUTPUTS / f"{int(sample_order):03d}_task_{task_index}.json"
+def find_agent_json(sample_order, task_index, outputs_dir):
+    expected = outputs_dir / f"{int(sample_order):03d}_task_{task_index}.json"
     if expected.exists():
         return expected
-    matches = sorted(ADD60_OUTPUTS.glob(f"*task_{task_index}.json"))
+    matches = sorted(outputs_dir.glob(f"*task_{task_index}.json"))
     if len(matches) == 1:
         return matches[0]
     raise FileNotFoundError(f"No agent output for sample_order={sample_order} task={task_index}")
+
+
+def materialize_batch(batch):
+    if batch["tmp_metadata"].exists():
+        shutil.copy2(batch["tmp_metadata"], batch["metadata"])
+    if batch["tmp_outputs"].exists():
+        batch["outputs"].mkdir(parents=True, exist_ok=True)
+        for src in sorted(batch["tmp_outputs"].glob("*.json")):
+            shutil.copy2(src, batch["outputs"] / src.name)
+    if not batch["metadata"].exists():
+        return []
+    return json.loads(batch["metadata"].read_text(encoding="utf-8"))
 
 
 def classifier_issue_note(classifier_row, audit_labels):
@@ -337,6 +376,10 @@ def best_boundary_note(row, cap, yes=True):
     notes = split_boundary_notes(source)
     if not notes:
         return ""
+    expected = f"{cap}={'yes' if yes else 'no'}"
+    for note in notes:
+        if note.lower().startswith(expected):
+            return note
     lowered_keywords = CAP_KEYWORDS[cap]
     for note in notes:
         low = note.lower()
@@ -362,8 +405,9 @@ def build_main_md(rows, stats, generated_utc, generated_la):
     mismatches = mismatch_rows(rows)
     classifier_concerns = [row for row in rows if row.get("classifier_issue_note")]
     stratum_counts = Counter(row["sample_stratum"] for row in rows)
+    sample_size = len(rows)
     lines = []
-    lines.append("# Part6 Random-90 GPT-5.5 High Capability Audit")
+    lines.append(f"# Part6 Random-{sample_size} GPT-5.5 High Capability Audit")
     lines.append("")
     lines.append("## 生成資訊")
     lines.append("")
@@ -371,11 +415,11 @@ def build_main_md(rows, stats, generated_utc, generated_la):
     lines.append(f"- generated_at_los_angeles: {generated_la}")
     lines.append("- base_sample_seed: 20260608")
     lines.append("- add60_sample_seed: 20260668")
-    lines.append("- sample_size: 90")
+    lines.append(f"- sample_size: {sample_size}")
     lines.append("- subagent_model: gpt-5.5")
     lines.append("- reasoning_effort: high")
     lines.append("- execution_mode: max 5 concurrent fresh subagents; one investor per subagent; subagents only received the input row and search instructions, not the Part6 output rows.")
-    lines.append("- note: rows 1-30 are the original audit batch; rows 31-90 are the additional batch requested on 2026-06-08 and merged into the same output files.")
+    lines.append("- note: rows 1-30 are the original audit batch; rows 31-90 are the additional random-60 batch; rows 91-93 are targeted additions requested for Jump Crypto, Jump Trading, and Wintermute.")
     lines.append("")
     lines.append("## 讀寫檔案")
     lines.append("")
@@ -391,13 +435,14 @@ def build_main_md(rows, stats, generated_utc, generated_la):
         ("Wrote", OUTPUT_MD),
         ("Wrote", MISMATCH_MD),
         ("Wrote", ROOT_CAUSE_MD),
-        ("Stored raw add60 outputs", RAW_COPY_DIR),
+        ("Stored raw add60 outputs", ADD60_OUTPUTS),
+        ("Stored raw targeted add3 outputs", ADD3_OUTPUTS),
     ]:
         lines.append(f"- {label}: `{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}`")
     lines.append("")
     lines.append("## 抽樣設計")
     lines.append("")
-    lines.append("本次是平衡抽查，不是對全量 13,970 records 的統計外推。90 家由原始 30 家與新增 60 家組成，新增樣本排除已抽中的 30 家，仍從 positive capability、searched negative、skip candidate、manual-focused 幾類中分層抽取，目的是同時檢查能力標籤漏標、誤標與分類器跳過風險。")
+    lines.append(f"本次是 audit sample，不是對全量 13,970 records 的統計外推。前 90 家由原始 30 家與新增 60 家組成，新增樣本排除已抽中的 30 家，仍從 positive capability、searched negative、skip candidate、manual-focused 幾類中分層抽取。第 91-93 家是 user-requested targeted comparison：Jump Crypto、Jump Trading、Wintermute。目的仍是檢查能力標籤漏標、誤標與分類器跳過風險。")
     lines.append("")
     lines.append(md_table(["sample_stratum", "count"], sorted(stratum_counts.items())))
     lines.append("")
@@ -460,7 +505,7 @@ def build_main_md(rows, stats, generated_utc, generated_la):
             ],
         ))
     else:
-        lines.append("本次 90 家樣本沒有發現明確 classifier/routing concern。")
+        lines.append(f"本次 {sample_size} 家樣本沒有發現明確 classifier/routing concern。")
     lines.append("")
     lines.append("其餘不一致大多發生在已被分類器送入 `full` 或 `light` 搜索的 records，較像能力判定邊界、來源深度或 attribution interpretation 問題，而不是單純分類器跳過問題。")
     lines.append("")
@@ -488,7 +533,7 @@ def build_main_md(rows, stats, generated_utc, generated_la):
             lines.append("")
             lines.append(md_table(["investor", "why_no"], no_examples))
     lines.append("")
-    lines.append("## Full 90-Company Sample")
+    lines.append(f"## Full {sample_size}-Company Sample")
     lines.append("")
     lines.append(md_table(
         ["order", "task", "investor", "stratum", "manual_review", "exact_match", "mismatches", "results_labels", "audit_labels", "audit_confidence"],
@@ -530,12 +575,13 @@ def build_main_md(rows, stats, generated_utc, generated_la):
 
 def build_mismatch_md(rows, generated_utc):
     mismatches = mismatch_rows(rows)
+    sample_size = len(rows)
     cap_mismatch_total = sum(1 for row in rows for cap in CAPS if row[f"mismatch_{cap}"] == "yes")
     under = sum(1 for row in rows for cap in CAPS if row[f"original_{cap}"] == "no" and row[f"audit_{cap}"] == "yes")
     over = sum(1 for row in rows for cap in CAPS if row[f"original_{cap}"] == "yes" and row[f"audit_{cap}"] == "no")
     classifier_concerns = [row for row in rows if row.get("classifier_issue_note")]
     lines = []
-    lines.append("# Part6 Random-90 Audit - Mismatch Analysis")
+    lines.append(f"# Part6 Random-{sample_size} Audit - Mismatch Analysis")
     lines.append("")
     lines.append("## Summary")
     lines.append("")
@@ -579,9 +625,10 @@ def build_mismatch_md(rows, generated_utc):
 
 def build_root_cause_md(rows, generated_utc):
     mismatches = mismatch_rows(rows)
+    sample_size = len(rows)
     category_counts = Counter(summarize_root_cause(row) for row in mismatches)
     lines = []
-    lines.append("# Part6 Random-90 Audit - Original Label Root Cause Analysis")
+    lines.append(f"# Part6 Random-{sample_size} Audit - Original Label Root Cause Analysis")
     lines.append("")
     lines.append("## Scope")
     lines.append("")
@@ -626,9 +673,11 @@ def build_root_cause_md(rows, generated_utc):
         for cap in mism_caps:
             direction = mismatch_direction(row, cap)
             if direction == "漏標":
-                lines.append(f"For `{cap}`, the original output likely missed a positive signal. The audit-side boundary note was: {row['audit_yes_boundaries'] or row['audit_evidence_summary']}")
+                note = best_boundary_note(row, cap, yes=True) or row["audit_yes_boundaries"] or row["audit_evidence_summary"]
+                lines.append(f"For `{cap}`, the original output likely missed a positive signal. The audit-side boundary note was: {note}")
             elif direction == "多標":
-                lines.append(f"For `{cap}`, the original output likely over-inferred from weak, generic, stale, or too-broad attribution evidence. The audit-side exclusion note was: {row['audit_no_boundaries'] or row['audit_evidence_summary']}")
+                note = best_boundary_note(row, cap, yes=False) or row["audit_no_boundaries"] or row["audit_evidence_summary"]
+                lines.append(f"For `{cap}`, the original output likely over-inferred from weak, generic, stale, or too-broad attribution evidence. The audit-side exclusion note was: {note}")
         lines.append("")
     lines.append("## Practical Fixes Suggested By The Root Causes")
     lines.append("")
@@ -651,34 +700,34 @@ def main():
     manual_tasks = set(read_csv_by_task(MANUAL_CSV))
     input_by_task = read_csv_by_task(INPUT_CSV)
 
-    metadata = json.loads(ADD60_METADATA.read_text(encoding="utf-8"))
+    batch_items = []
+    for batch in BATCHES:
+        for meta in materialize_batch(batch):
+            batch_items.append((batch, meta))
+
     added_rows = []
-    for meta in metadata:
-        audit_path = find_agent_json(meta["sample_order"], meta["task_index"])
+    for batch, meta in batch_items:
+        audit_path = find_agent_json(meta["sample_order"], meta["task_index"], batch["outputs"])
         audit = loose_json_load(audit_path)
         added_rows.append(build_added_row(meta, audit, results_by_task, classifier_by_task, manual_tasks, input_by_task))
 
     rows = base_rows + [ordered_row(row, fieldnames) for row in added_rows]
     rows.sort(key=lambda row: int(row["sample_order"]))
 
-    if len(rows) != 90:
-        raise SystemExit(f"Expected 90 rows, got {len(rows)}")
+    expected_count = len(base_rows) + len(batch_items)
+    if len(rows) != expected_count:
+        raise SystemExit(f"Expected {expected_count} rows, got {len(rows)}")
     orders = [int(row["sample_order"]) for row in rows]
-    if orders != list(range(1, 91)):
-        raise SystemExit(f"Sample orders are not 1..90: {orders[:5]} ... {orders[-5:]}")
+    if orders != list(range(1, expected_count + 1)):
+        raise SystemExit(f"Sample orders are not 1..{expected_count}: {orders[:5]} ... {orders[-5:]}")
     tasks = [row["task_index"] for row in rows]
-    if len(set(tasks)) != 90:
+    if len(set(tasks)) != expected_count:
         raise SystemExit("Duplicate task_index in merged audit rows")
 
     with OUTPUT_CSV.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
-
-    RAW_COPY_DIR.mkdir(parents=True, exist_ok=True)
-    for src in sorted(ADD60_OUTPUTS.glob("*.json")):
-        shutil.copy2(src, RAW_COPY_DIR / src.name)
-    shutil.copy2(ADD60_METADATA, AUDIT_DIR / "add60_sample_metadata.json")
 
     generated_utc_dt = datetime.now(timezone.utc)
     generated_utc = generated_utc_dt.isoformat()

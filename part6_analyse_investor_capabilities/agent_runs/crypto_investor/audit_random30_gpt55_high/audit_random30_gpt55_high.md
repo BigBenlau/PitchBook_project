@@ -1,16 +1,16 @@
-# Part6 Random-90 GPT-5.5 High Capability Audit
+# Part6 Random-93 GPT-5.5 High Capability Audit
 
 ## 生成資訊
 
-- generated_at_utc: 2026-06-08T11:27:55.260665+00:00
-- generated_at_los_angeles: 2026-06-08T04:27:55.260665-07:00
+- generated_at_utc: 2026-06-08T14:13:21.237960+00:00
+- generated_at_los_angeles: 2026-06-08T07:13:21.237960-07:00
 - base_sample_seed: 20260608
 - add60_sample_seed: 20260668
-- sample_size: 90
+- sample_size: 93
 - subagent_model: gpt-5.5
 - reasoning_effort: high
 - execution_mode: max 5 concurrent fresh subagents; one investor per subagent; subagents only received the input row and search instructions, not the Part6 output rows.
-- note: rows 1-30 are the original audit batch; rows 31-90 are the additional batch requested on 2026-06-08 and merged into the same output files.
+- note: rows 1-30 are the original audit batch; rows 31-90 are the additional random-60 batch; rows 91-93 are targeted additions requested for Jump Crypto, Jump Trading, and Wintermute.
 
 ## 讀寫檔案
 
@@ -26,10 +26,11 @@
 - Wrote: `part6_analyse_investor_capabilities/agent_runs/crypto_investor/audit_random30_gpt55_high/mismatch_analysis.md`
 - Wrote: `part6_analyse_investor_capabilities/agent_runs/crypto_investor/audit_random30_gpt55_high/original_label_root_cause.md`
 - Stored raw add60 outputs: `part6_analyse_investor_capabilities/agent_runs/crypto_investor/audit_random30_gpt55_high/raw_add60_agent_outputs`
+- Stored raw targeted add3 outputs: `part6_analyse_investor_capabilities/agent_runs/crypto_investor/audit_random30_gpt55_high/raw_add3_agent_outputs`
 
 ## 抽樣設計
 
-本次是平衡抽查，不是對全量 13,970 records 的統計外推。90 家由原始 30 家與新增 60 家組成，新增樣本排除已抽中的 30 家，仍從 positive capability、searched negative、skip candidate、manual-focused 幾類中分層抽取，目的是同時檢查能力標籤漏標、誤標與分類器跳過風險。
+本次是 audit sample，不是對全量 13,970 records 的統計外推。前 90 家由原始 30 家與新增 60 家組成，新增樣本排除已抽中的 30 家，仍從 positive capability、searched negative、skip candidate、manual-focused 幾類中分層抽取。第 91-93 家是 user-requested targeted comparison：Jump Crypto、Jump Trading、Wintermute。目的仍是檢查能力標籤漏標、誤標與分類器跳過風險。
 
 | sample_stratum | count |
 | --- | --- |
@@ -43,22 +44,23 @@
 | searched_negative_full | 9 |
 | searched_negative_light | 9 |
 | skip_candidate | 12 |
+| targeted_addition | 3 |
 
 ## 核心結論
 
-- 六個能力完全一致: 42/90
-- 至少一個能力不一致: 48/90
-- 不一致且已在 `needs_manual_review.csv`: 8/48
-- 不一致但不在 `needs_manual_review.csv`: 40/48
+- 六個能力完全一致: 43/93
+- 至少一個能力不一致: 50/93
+- 不一致且已在 `needs_manual_review.csv`: 8/50
+- 不一致但不在 `needs_manual_review.csv`: 42/50
 - classifier/routing concern: 3 sampled rows
 
 | capability | results_yes | audit_yes | mismatch_count | results_no_audit_yes | results_yes_audit_no |
 | --- | --- | --- | --- | --- | --- |
-| otc_trading | 21 | 25 | 4 | 4 | 0 |
-| algorithm_trading | 18 | 27 | 11 | 10 | 1 |
-| market_making | 15 | 30 | 15 | 15 | 0 |
-| execution_services | 23 | 39 | 16 | 16 | 0 |
-| defi | 22 | 43 | 21 | 21 | 0 |
+| otc_trading | 22 | 27 | 5 | 5 | 0 |
+| algorithm_trading | 21 | 30 | 11 | 10 | 1 |
+| market_making | 16 | 33 | 17 | 17 | 0 |
+| execution_services | 24 | 42 | 18 | 18 | 0 |
+| defi | 23 | 46 | 23 | 23 | 0 |
 | sub_fund | 15 | 22 | 15 | 11 | 4 |
 
 ## 不一致公司與 Manual Review 狀態
@@ -115,6 +117,8 @@
 | 12543 | Sportzchain | no | execution_services\|defi | [] | ["execution_services", "defi"] | skip_candidate | no | skip_candidate_but_independent_audit_found_capability\|capability_search_required_no_but_independent_audit_found_capability |
 | 46 | Alameda Research | yes | defi | ["otc_trading", "algorithm_trading", "market_making", "execution_services"] | ["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"] | full | yes |  |
 | 112 | Bixin Ventures | yes | execution_services\|defi\|sub_fund | [] | ["execution_services", "defi", "sub_fund"] | full | yes |  |
+| 94 | Jump Crypto | no | market_making\|execution_services\|defi | ["algorithm_trading"] | ["algorithm_trading", "market_making", "execution_services", "defi"] | full | yes |  |
+| 1030 | Jump Trading | no | otc_trading\|market_making\|execution_services\|defi | ["algorithm_trading"] | ["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"] | full | yes |  |
 
 ## Classifier 對照觀察
 
@@ -213,7 +217,7 @@ Yes boundary examples from this audit:
 | Samuel Bankman-Fried | market_making crosses the threshold because Alameda, under Bankman-Fried's ownership/control, was explicitly described as a primary market maker and liquidity provider on FTX. |
 | Nonco | market_making crosses the threshold because Nonco explicitly markets Market Making and third-party sources state it operates as a market maker and provides liquidity. |
 | Mohamed Jezri Mohideen | algorithm_trading crosses the threshold because Laser Digital explicitly describes quant-driven liquidity provision and systematic trading. |
-| Caladan | market_making=yes because Caladan explicitly markets institutional-grade crypto market making services and liquidity provision for token projects and exchanges. |
+| BR Capital | market_making=yes because BR Capital explicitly markets market-making and separately states on its official site that it provides liquidity through trading and staking activities in CeFi and DeFi. |
 
 No / near-miss boundary examples from this audit:
 
@@ -224,9 +228,9 @@ No / near-miss boundary examples from this audit:
 | Sentillia | Tools for market makers are not Deribit itself market-making. |
 | Pantronics Holdings | market_making is not marked yes because the only explicit market making/liquidity provision language found is framed as future customized quantitative solutions, not an operated current capability. |
 | Anand Gomes | market_making is no: Paradigm connects users with market makers/liquidity providers, but its FAQ explicitly says Paradigm is not a market-maker and does not trade for its own account. |
+| Vilas Capital Management | market_making=no because there is no evidence Vilas Capital makes markets or provides liquidity. |
 | Joseph Jones | Buying GOXBTC and operating a trading platform are not explicit market making or liquidity provision evidence. |
 | Coven | market_making=no: no explicit Coven market making or liquidity provision evidence. |
-| Chainview Capital | Market making is not supported: liquid-market trading, relative value, derivatives, and portfolio-company activity do not show Chainview itself providing liquidity or operating AMM/liquidity pools. |
 
 ### execution_services
 
@@ -258,7 +262,7 @@ No / near-miss boundary examples from this audit:
 | Petros Bozatzis | Board/advisor exposure to an exchange is not investor-itself execution or algorithmic trading capability. |
 | JobsOhio Ventures | Sidecar/co-investment capital is venture financing, not execution/trading; evergreen subsidiary status is not sub_fund. |
 | Hdac Technology | Consensus algorithms and asset exchange modules are not algorithmic trading or execution_services under the strict trading-service definition. |
-| BR Capital | otc_trading=no because I found no explicit OTC desk, block trading, or bilateral trading evidence for BR Capital. |
+| BR Capital | execution_services=no because liquidity provision and trading activity are not enough without explicit execution, order routing, brokerage, prime brokerage, or liquidity-access services offered by BR Capital. |
 
 ### defi
 
@@ -324,7 +328,7 @@ No / near-miss boundary examples from this audit:
 | Kronos Investment Group | Ordinary real-estate funds and portfolio exposure are not sub_fund or DeFi/trading capabilities. |
 | JobsOhio Ventures | Sidecar/co-investment capital is venture financing, not execution/trading; evergreen subsidiary status is not sub_fund. |
 
-## Full 90-Company Sample
+## Full 93-Company Sample
 
 | order | task | investor | stratum | manual_review | exact_match | mismatches | results_labels | audit_labels | audit_confidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -418,6 +422,9 @@ No / near-miss boundary examples from this audit:
 | 88 | 7535 | Cyphermines | manual_focused | yes | yes |  | [] | [] | medium |
 | 89 | 258 | 7 O'clock Capital | positive_manual_boost | yes | yes |  | ["defi"] | ["defi"] | medium |
 | 90 | 3444 | VenturesLab | positive_manual_boost | yes | yes |  | ["sub_fund"] | ["sub_fund"] | medium |
+| 91 | 94 | Jump Crypto | targeted_addition | no | no | market_making\|execution_services\|defi | ["algorithm_trading"] | ["algorithm_trading", "market_making", "execution_services", "defi"] | high |
+| 92 | 1030 | Jump Trading | targeted_addition | no | no | otc_trading\|market_making\|execution_services\|defi | ["algorithm_trading"] | ["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"] | high |
+| 93 | 378 | Wintermute | targeted_addition | no | yes |  | ["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"] | ["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"] | high |
 
 ## Mismatch Evidence Summaries
 
@@ -945,3 +952,25 @@ No / near-miss boundary examples from this audit:
 - Audit evidence summary: Bixin Ventures' official site identifies it as an investor in crypto networks and open financial systems and ties it to Bixin Group's operating crypto infrastructure. Bixin.com support documentation describes an exchange and off-platform system with explicit order placement and trade execution through liquidity providers, supporting execution_services for the attributable Bixin operating platform. Bixin Ventures announced a $100M proprietary fund for open finance/decentralized infrastructure, and reporting explicitly describes the fund as focused on scaling DeFi. Bixin Ventures/Bixin Global also announced a proprietary fund of funds, satisfying sub_fund. I did not find sufficient evidence that Bixin Ventures itself operates OTC trading, algorithmic trading, or market making.
 - Audit Yes boundary notes: execution_services=yes because Bixin.com documentation explicitly describes exchange and off-platform trade execution, order placement, and execution through liquidity providers on the attributable Bixin operating platform.|defi=yes because Bixin Ventures explicitly launched capital focused on open finance through permissionless decentralized networks, with reporting describing the purpose as scaling decentralized finance.|sub_fund=yes because Bixin Ventures/Bixin Global explicitly announced a proprietary fund of funds.
 - Audit No boundary notes: otc_trading=no because the evidence mentions OTC lending and off-platform trading without an order book, but I did not find explicit OTC desk, block trading, or bilateral OTC trading operated by Bixin Ventures.|algorithm_trading=no because references to quant funds, arbitrage, CTA, and trend strategies relate to external funds or personnel history, not Bixin Ventures operating algorithmic, quantitative, systematic, HFT, or low-latency trading.|market_making=no because Bixin.com documents independent third-party market makers/liquidity providers and the fund-of-funds supports liquidity providers, but that is not enough to show Bixin Ventures itself provides market making.
+
+### 49. Jump Crypto - task 94
+
+- In `needs_manual_review.csv`: no
+- Results labels: `["algorithm_trading"]`
+- Audit labels: `["algorithm_trading", "market_making", "execution_services", "defi"]`
+- Mismatched capabilities: `market_making|execution_services|defi`
+- Original evidence summary: Jump Crypto describes itself as the crypto division of Jump Trading Group and frames its work around active participation in crypto markets and trading intelligence.
+- Audit evidence summary: Jump Crypto's official materials describe it as an active crypto market participant, liquidity provider, and builder of DeFi/onchain market infrastructure. Its PropAMM article describes BisonFi as Jump Crypto's own PropAMM, with an offchain pricing engine, onchain execution program, executable bids/offers, continuous repricing, and market-making logic. Jump Trading's official pages also support the attributable operating-platform context: the parent trades digital assets and uses high-frequency/stat-arb strategies plus ML-driven low-latency trading systems. I found no explicit Jump Crypto OTC desk, block/bilateral trading service, or sub-fund/feeder/SPV/fund-platform evidence.
+- Audit Yes boundary notes: algorithm_trading=yes because official Jump Crypto PropAMM materials describe continuous offchain pricing models, frequent oracle updates, proprietary logic, and executable onchain liquidity; Jump Trading's official trading pages also explicitly reference high-frequency and stat-arb strategies across digital assets.|market_making=yes because Jump Crypto explicitly says it is an active market participant and liquidity provider on Serum, and its PropAMM article describes market-making logic in its own BisonFi system.|execution_services=yes because BisonFi/PropAMM is described as an onchain execution program providing executable bids and offers where user swaps settle directly against onchain liquidity.|defi=yes because Jump Crypto's official materials explicitly frame its work around DeFi, onchain AMMs, Serum, Pyth, Wormhole, and permissionless market-structure infrastructure, not merely passive investments.
+- Audit No boundary notes: otc_trading=no because active trading, liquidity provision, and direct onchain execution evidence did not include an explicit OTC desk, block trading, or bilateral trading service for Jump Crypto.|sub_fund=no because the official site states Jump Crypto does not operate business lines accepting external investor funds, and no sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds evidence was found.|Portfolio investments in DEXs, AMMs, wallets, exchanges, and DeFi protocols were not used by themselves to infer capabilities.
+
+### 50. Jump Trading - task 1030
+
+- In `needs_manual_review.csv`: no
+- Results labels: `["algorithm_trading"]`
+- Audit labels: `["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"]`
+- Mismatched capabilities: `otc_trading|market_making|execution_services|defi`
+- Original evidence summary: Official site describes Jump Trading as a global trading firm and its technology stack supporting research trading and data efforts which directly supports algorithmic trading
+- Audit evidence summary: Jump Trading's official trading page says its strategies span high-frequency and stat-arb trading across asset classes, supporting algorithm_trading. Jump Crypto, identified as the crypto division of Jump Trading Group, is described in a company press release as active in trading and market-making activities, and its official materials describe DeFi development, Solana DeFi trading, Pyth/Wormhole/Firedancer infrastructure, and active crypto market participation. Jump Liquidity materials describe a Jump Trading-created business providing clients direct access to Jump principal liquidity, enhanced access to liquidity, and customizable direct counterparty liquidity. Risk.net explicitly reports that Jump Trading launched a bilateral business. No evidence found for a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds capability; Jump Crypto also states it does not accept external investor funds.
+- Audit Yes boundary notes: algorithm_trading=yes because the official Jump Trading site explicitly describes high-frequency trading strategies.|market_making=yes because Jump Crypto is explicitly described as participating in market-making activities, and Jump Liquidity is described as created by Jump Trading, one of the world's leading market makers.|execution_services=yes because Jump Liquidity is explicitly described as providing direct/enhanced access to Jump principal liquidity and customizable liquidity streams to clients/counterparties.|otc_trading=yes because Risk.net explicitly describes Jump Trading launching a bilateral business, satisfying the bilateral trading threshold.|defi=yes because Jump Crypto is a clearly attributable Jump Trading Group division, and official/company materials explicitly describe DeFi development and trading on Solana DeFi, not merely passive funding of DeFi startups.
+- Audit No boundary notes: sub_fund=no because evidence showed operating trading, liquidity, crypto infrastructure, and venture/investment activity, but no explicit sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds structure.|Portfolio investments in DEXs, AMMs, wallets, and crypto infrastructure were not used by themselves to infer capabilities; DeFi was marked yes only due to Jump Crypto's own stated DeFi activity and infrastructure role.
