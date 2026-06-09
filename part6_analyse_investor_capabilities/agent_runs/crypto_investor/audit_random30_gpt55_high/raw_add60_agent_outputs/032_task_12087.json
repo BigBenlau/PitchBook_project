@@ -1,0 +1,21 @@
+{
+  "task_index": "12087",
+  "investor_id": "467624-26",
+  "investor_name": "Samuel Bankman-Fried",
+  "capabilities": {
+    "otc_trading": "yes",
+    "algorithm_trading": "yes",
+    "market_making": "yes",
+    "execution_services": "yes",
+    "defi": "yes",
+    "sub_fund": "no"
+  },
+  "capability_labels": ["otc_trading", "algorithm_trading", "market_making", "execution_services", "defi"],
+  "evidence_urls": ["https://www.cftc.gov/media/8021/enfftxtradingcomplaint122122/download", "https://www.econclubny.org/documents/10184/109144/2022Bankman-FriedTranscript.pdf", "https://docs.projectserum.com/introduction/overview", "https://www.sfox.com/blog/an-overview-of-popular-defi-protocols-funding-and-performance/"],
+  "evidence_source_types": ["primary_filing", "secondary_profile", "official_docs", "news_or_blog"],
+  "evidence_summary": "The CFTC amended complaint states that Bankman-Fried owned, operated, or controlled FTX and Alameda; Alameda used proprietary algorithmic quantitative programs and high-frequency arbitrage, and operated as a primary market maker/liquidity provider on FTX. The same filing describes FTX as a centralized digital asset exchange with an order book, matching engine, API, and OTC portal for direct quote-based spot trades. An Economic Club transcript states Bankman-Fried designed Jane Street's automated OTC-trading system. Serum documentation describes Serum as a decentralized finance protocol with an on-chain order book and matching engine, and SFOX reports Project Serum was founded by Sam Bankman-Fried and FTX members. No evidence found for sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds capability.",
+  "yes_boundaries": ["otc_trading crosses the threshold because public evidence explicitly says Bankman-Fried designed an automated OTC-trading system at Jane Street, and the FTX platform he controlled also operated an OTC portal for direct quote-based trades.", "algorithm_trading crosses the threshold because Alameda, under Bankman-Fried's ownership/control, used proprietary algorithmic quantitative programs and high-frequency arbitrage trading.", "market_making crosses the threshold because Alameda, under Bankman-Fried's ownership/control, was explicitly described as a primary market maker and liquidity provider on FTX.", "execution_services crosses the threshold because FTX, controlled by Bankman-Fried, operated exchange infrastructure including an electronic order book, matching engine, API access, and OTC portal.", "defi crosses the threshold because Bankman-Fried is publicly tied to founding Project Serum, and Serum's own docs describe it as a DeFi protocol/ecosystem with decentralized order-book and matching infrastructure."],
+  "no_boundaries": ["No sub_fund classification: evidence of Alameda/FTX entities, trading firms, and investment activity is not explicit evidence of a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds.", "Portfolio or investment relationships alone were not used to infer DeFi capability; the DeFi yes decision relies on Bankman-Fried's founder/control relationship to Serum/FTX/Alameda-related operating platforms."],
+  "confidence": "high",
+  "recommended_manual_review": "yes"
+}

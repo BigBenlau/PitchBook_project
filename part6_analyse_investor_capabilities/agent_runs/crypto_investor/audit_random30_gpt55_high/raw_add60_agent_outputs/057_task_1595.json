@@ -1,0 +1,14 @@
+{
+  "task_index": "1595",
+  "investor_id": "490158-73",
+  "investor_name": "Mow capital",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "yes", "market_making": "yes", "execution_services": "no", "defi": "no", "sub_fund": "no"},
+  "capability_labels": ["algorithm_trading", "market_making"],
+  "evidence_urls": ["https://mowcapital.com/"],
+  "evidence_source_types": ["official_site"],
+  "evidence_summary": "Mow Capital's official site says it is a quantitative trading firm and liquidity provider active in leading crypto markets, has a high frequency trading section, trades major coins on major exchanges, and describes itself as a top market maker. The site also describes crypto investing, but does not show OTC desk/block trading, client execution or brokerage services, DeFi-native operations/products, or sub-fund/feeder/SPV/fund-platform structure.",
+  "yes_boundaries": ["algorithm_trading=yes because the official site explicitly calls Mow Capital a quantitative trading firm and separately describes high frequency trading.", "market_making=yes because the official site explicitly calls Mow Capital a liquidity provider and a top market maker."],
+  "no_boundaries": ["otc_trading=no because no explicit OTC desk, block trading, or bilateral trading evidence was found.", "execution_services=no because trading on exchanges and providing liquidity are not the same as explicit client execution, order routing, brokerage, prime brokerage, or liquidity access services.", "defi=no because portfolio exposure to crypto or DeFi-related companies is insufficient without evidence that Mow Capital itself operates or markets DeFi-native capability or product exposure.", "sub_fund=no because no explicit sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds evidence was found."],
+  "confidence": "high",
+  "recommended_manual_review": "no"
+}

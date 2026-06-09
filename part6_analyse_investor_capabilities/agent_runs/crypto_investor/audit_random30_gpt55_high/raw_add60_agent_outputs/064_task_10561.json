@@ -1,0 +1,14 @@
+{
+  "task_index": "10561",
+  "investor_id": "491588-11",
+  "investor_name": "MetaStreet",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "yes", "defi": "yes", "sub_fund": "no"},
+  "capability_labels": ["execution_services", "defi"],
+  "evidence_urls": ["https://metastreet.xyz/", "https://docs.metastreet.xyz/welcome-to-metastreet/introduction", "https://docs.metastreet.xyz/liquidity-layer/overview", "https://docs.metastreet.xyz/liquidity-layer/borrow", "https://docs.metastreet.xyz/technical-overview/protocol-design/liquidity-ticks"],
+  "evidence_source_types": ["official_site", "official_docs", "official_docs", "official_docs", "official_docs"],
+  "evidence_summary": "MetaStreet's official site and docs describe a DeFi-oriented protocol/product suite for yield, borrowing, lending pools, Liquid Credit Tokens, and NFT/object collateral. The docs state that MetaStreet/Permian Labs develops DeFi primitives, that the ATM is a permissionless lending protocol, that borrowers accept aggregated loan offers, and that the Borrow interface lets holders use NFT/object collateral to take loans. Its technical docs also describe liquidity sourcing and tick routing by the MetaStreet SDK. No public evidence found for OTC/block trading, algorithmic or HFT trading, market making as a trading/AMM operator, or sub-fund/feeder/SPV/fund platform activity.",
+  "yes_boundaries": ["defi=yes because MetaStreet itself operates and markets DeFi-native lending/yield infrastructure, including a permissionless lending protocol and composable ERC-20 credit tokens.", "execution_services=yes because MetaStreet provides explicit liquidity access and routing for loan execution: borrowers accept aggregated offers through its Borrow interface, liquidity is sourced from ticks, and the MetaStreet SDK performs tick routing."],
+  "no_boundaries": ["otc_trading=no: no explicit OTC desk, block trading, or bilateral trading service evidence.", "algorithm_trading=no: the tick routing algorithm is for assembling DeFi loans, not algorithmic, quantitative, systematic, HFT, or low-latency trading.", "market_making=no: MetaStreet operates lending/liquidity infrastructure, but I did not find explicit evidence that MetaStreet itself provides two-sided market making or operates an AMM/liquidity pool as market maker.", "sub_fund=no: no evidence of a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds."],
+  "confidence": "high",
+  "recommended_manual_review": "no"
+}

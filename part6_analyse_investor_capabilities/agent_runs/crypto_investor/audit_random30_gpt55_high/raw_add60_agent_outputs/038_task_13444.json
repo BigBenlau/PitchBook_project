@@ -1,0 +1,14 @@
+{
+  "task_index": "13444",
+  "investor_id": "311933-08",
+  "investor_name": "Vilas Capital Management",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "yes", "market_making": "no", "execution_services": "no", "defi": "no", "sub_fund": "no"},
+  "capability_labels": ["algorithm_trading"],
+  "evidence_urls": ["https://www.vilascapital.com/", "https://www.sec.gov/Archives/edgar/data/1600375/000160037514000001/xslFormDX01/primary_doc.xml"],
+  "evidence_source_types": ["official_site", "primary_filing", "local_input"],
+  "evidence_summary": "Vilas Capital's official site describes it as a value manager investing in a concentrated portfolio, selling short when available, and using quantitative measures such as price-to-book, price-to-earnings, and returns on capital, plus time-frame arbitrage. The input row likewise describes a value, quantitative, and time-frame arbitrage style. The SEC Form D and official site show Vilas Capital as general partner/promoter of Vilas Fund, LP, a hedge/pooled investment fund, but do not show any feeder, umbrella, parallel fund, SPV platform, fund-of-funds, execution desk, OTC/block/bilateral desk, market making, liquidity provision, brokerage, order routing, or DeFi-native product/capability.",
+  "yes_boundaries": ["algorithm_trading=yes because the investor's own official site explicitly says its approach uses quantitative measures, and the local input independently describes a quantitative investment style; Part6 allows explicit quantitative evidence."],
+  "no_boundaries": ["otc_trading=no because short selling and hedge fund activity are not explicit OTC desk, block trading, or bilateral trading evidence.", "market_making=no because there is no evidence Vilas Capital makes markets or provides liquidity.", "execution_services=no because there is no evidence of execution services, smart/order routing, brokerage, prime brokerage, or liquidity access.", "defi=no because the local token-company investment context does not show Vilas Capital itself operating or marketing DeFi-native capability or product exposure.", "sub_fund=no because Vilas Fund, LP appears to be a standard pooled hedge fund managed by Vilas Capital; there is no explicit feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds evidence."],
+  "confidence": "medium",
+  "recommended_manual_review": "no"
+}

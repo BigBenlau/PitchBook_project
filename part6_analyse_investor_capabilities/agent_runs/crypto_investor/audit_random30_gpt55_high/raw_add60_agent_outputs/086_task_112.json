@@ -1,0 +1,47 @@
+{
+  "task_index": "112",
+  "investor_id": "230149-00",
+  "investor_name": "Bixin Ventures",
+  "capabilities": {
+    "otc_trading": "no",
+    "algorithm_trading": "no",
+    "market_making": "no",
+    "execution_services": "yes",
+    "defi": "yes",
+    "sub_fund": "yes"
+  },
+  "capability_labels": [
+    "execution_services",
+    "defi",
+    "sub_fund"
+  ],
+  "evidence_urls": [
+    "https://bixinvc.com/",
+    "https://support.bixin.com/hc/en-hk/articles/25251658557203-The-Off-Platform-Trading-System-Functional-Documentation",
+    "https://support.bixin.com/hc/en-hk/articles/25250840481555-The-Exchange-Business-Functional-Documentation",
+    "https://www.acnnewswire.com/press-release/english/62205/bixin-ventures-announces-%24100m-proprietary-capital-fund-to-support-global-blockchain-ecosystem",
+    "https://www.acnnewswire.com/press-release/english/58926/bixin-global-announces-us%2466-million-global-fund-of-funds-for-cryptocurrency",
+    "https://www.theblock.co/post/81790/bixin-bitcoin-miner-fund-defi"
+  ],
+  "evidence_source_types": [
+    "official_site",
+    "official_docs",
+    "official_docs",
+    "news_or_blog",
+    "news_or_blog",
+    "news_or_blog"
+  ],
+  "evidence_summary": "Bixin Ventures' official site identifies it as an investor in crypto networks and open financial systems and ties it to Bixin Group's operating crypto infrastructure. Bixin.com support documentation describes an exchange and off-platform system with explicit order placement and trade execution through liquidity providers, supporting execution_services for the attributable Bixin operating platform. Bixin Ventures announced a $100M proprietary fund for open finance/decentralized infrastructure, and reporting explicitly describes the fund as focused on scaling DeFi. Bixin Ventures/Bixin Global also announced a proprietary fund of funds, satisfying sub_fund. I did not find sufficient evidence that Bixin Ventures itself operates OTC trading, algorithmic trading, or market making.",
+  "yes_boundaries": [
+    "execution_services=yes because Bixin.com documentation explicitly describes exchange and off-platform trade execution, order placement, and execution through liquidity providers on the attributable Bixin operating platform.",
+    "defi=yes because Bixin Ventures explicitly launched capital focused on open finance through permissionless decentralized networks, with reporting describing the purpose as scaling decentralized finance.",
+    "sub_fund=yes because Bixin Ventures/Bixin Global explicitly announced a proprietary fund of funds."
+  ],
+  "no_boundaries": [
+    "otc_trading=no because the evidence mentions OTC lending and off-platform trading without an order book, but I did not find explicit OTC desk, block trading, or bilateral OTC trading operated by Bixin Ventures.",
+    "algorithm_trading=no because references to quant funds, arbitrage, CTA, and trend strategies relate to external funds or personnel history, not Bixin Ventures operating algorithmic, quantitative, systematic, HFT, or low-latency trading.",
+    "market_making=no because Bixin.com documents independent third-party market makers/liquidity providers and the fund-of-funds supports liquidity providers, but that is not enough to show Bixin Ventures itself provides market making."
+  ],
+  "confidence": "medium",
+  "recommended_manual_review": "yes"
+}

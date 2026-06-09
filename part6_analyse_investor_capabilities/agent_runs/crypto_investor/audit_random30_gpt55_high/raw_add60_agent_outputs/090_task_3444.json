@@ -1,0 +1,40 @@
+{
+  "task_index": "3444",
+  "investor_id": "61992-37",
+  "investor_name": "VenturesLab",
+  "capabilities": {
+    "otc_trading": "no",
+    "algorithm_trading": "no",
+    "market_making": "no",
+    "execution_services": "no",
+    "defi": "no",
+    "sub_fund": "yes"
+  },
+  "capability_labels": [
+    "sub_fund"
+  ],
+  "evidence_urls": [
+    "https://www.ventureslab.com/",
+    "https://www.ventureslab.com/team",
+    "https://www.premieralts.com/investors/ventureslab",
+    "https://www.digital-capital-management.com/wp-content/uploads/2022/04/GERMAN-TRADE-MISSION-INFORMATION.pdf"
+  ],
+  "evidence_source_types": [
+    "official_site",
+    "official_site",
+    "secondary_profile",
+    "official_docs",
+    "local_input"
+  ],
+  "evidence_summary": "VenturesLab's official site describes it as an early Chinese incubator/investor focused on early-stage and growth companies, with team history spanning GP, LP, entrepreneur, and angel investor roles. A secondary profile describes VenturesLab as a Beijing family office/investment holding company investing in public equities, early-stage private investments, and venture funds as an LP. The input row explicitly says VenturesLab set up an SPV called DOS Capital to make LP investments into emerging manager VC funds, and the public trade-mission PDF lists VenturesLab / DOS Capital and separately DOS Capital as a Hybrid Fund of Funds Manager. I found no evidence that VenturesLab itself operates OTC trading, algorithmic trading, market making, execution/brokerage/liquidity access, or DeFi-native products.",
+  "yes_boundaries": [
+    "sub_fund=yes because the local input explicitly identifies DOS Capital as an SPV set up by VenturesLab for LP fund investments, and public evidence links VenturesLab / DOS Capital while listing DOS Capital as a Hybrid Fund of Funds Manager."
+  ],
+  "no_boundaries": [
+    "Crypto/blockchain exposure and any OKCoin/OKX-related portfolio evidence do not confer OTC trading, market making, execution services, algorithmic trading, or DeFi capability to VenturesLab itself.",
+    "VenturesLab's official site includes investment and incubator language, plus portfolio companies using AI, software, payments, and blockchain-related technology, but this is not explicit trading, brokerage, liquidity provision, or DeFi-native operating capability by VenturesLab.",
+    "The founder/team references LP, GP, angel-investor, and bitcoin-supporter roles, but not an attributable operating platform for OTC, algorithmic trading, market making, execution services, or DeFi."
+  ],
+  "confidence": "medium",
+  "recommended_manual_review": "no"
+}

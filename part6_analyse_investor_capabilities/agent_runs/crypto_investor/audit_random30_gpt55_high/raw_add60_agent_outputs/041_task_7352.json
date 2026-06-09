@@ -1,0 +1,14 @@
+{
+  "task_index": "7352",
+  "investor_id": "529265-17",
+  "investor_name": "Consensus Technologies",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "yes", "market_making": "yes", "execution_services": "yes", "defi": "no", "sub_fund": "no"},
+  "capability_labels": ["algorithm_trading", "market_making", "execution_services"],
+  "evidence_urls": ["https://ec.linkedin.com/company/contec-io"],
+  "evidence_source_types": ["secondary_profile"],
+  "evidence_summary": "Consensus Technologies Inc. / ConTec is described as a crypto hedge fund trading cryptocurrencies and derivatives. Its profile states it provides liquidity to tokens, does quantitative asset management, develops high-frequency arbitrage and statistical arbitrage strategies, trades hundreds of listed tokens, and offers brokerage service to help investors and partners liquidate institutional-size token positions through its trading and settlement process. I found no explicit OTC desk, block trading, bilateral trading, DeFi-native operating product, or sub-fund/feeder/umbrella/SPV/fund-platform evidence.",
+  "yes_boundaries": ["algorithm_trading crosses the threshold because the investor is explicitly described as doing quantitative asset management, high-frequency arbitrage, and statistical arbitrage.", "market_making crosses the threshold because the investor is explicitly described as providing liquidity to tokens.", "execution_services crosses the threshold because the investor is explicitly described as offering brokerage service and a trading and settlement process for institutional-size token liquidation."],
+  "no_boundaries": ["otc_trading is no because institutional-size token liquidation and brokerage service are near-miss evidence but do not explicitly state OTC desk, block trading, or bilateral trading.", "defi is no because blockchain/token trading and venture investing alone do not show that the investor operates or markets a DeFi-native capability or product exposure.", "sub_fund is no because a multi-strategy quantitative fund is not explicit evidence of a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds."],
+  "confidence": "medium",
+  "recommended_manual_review": "no"
+}

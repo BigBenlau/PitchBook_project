@@ -1,0 +1,14 @@
+{
+  "task_index": "10327",
+  "investor_id": "520581-16",
+  "investor_name": "Marco Alberti",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "no", "defi": "no", "sub_fund": "no"},
+  "capability_labels": [],
+  "evidence_urls": ["https://www.peccala.com/about-us", "https://www.360pays.com/en/about-us", "https://www.360pays.com/en/news/post/360pay-invest-customs-clearance", "https://find-and-update.company-information.service.gov.uk/officers/seFu6m8SAGj_ib_aDmYb6R3o6YI/appointments", "https://www.companyhouse.de/Marco-Alberti"],
+  "evidence_source_types": ["official_site", "official_site", "official_site", "primary_filing", "secondary_profile"],
+  "evidence_summary": "Peccala's official site lists Marco Alberti only as an investor and separately says Peccala uses algorithmic crypto trading technology; that is portfolio-company evidence, not capability evidence for Alberti himself. 360PAY official materials and UK Companies House show Marco Alberti as CEO/director of transport payment, tolling, fleet, welfare, and customs-clearance businesses, with no securities/crypto OTC desk, algorithmic trading operation, market making, brokerage/execution, DeFi-native product, or sub-fund structure attributable to him. A secondary company profile links Marco Alberti to Sobremesa Investments GmbH as an investment holding vehicle, but does not evidence a feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds capability.",
+  "yes_boundaries": [],
+  "no_boundaries": ["Peccala's algorithmic crypto trading technology is a portfolio-company capability and is not attributable to Marco Alberti as an angel investor.", "360PAY payment, tolling, fleet, welfare, and customs-clearance services are commercial transport/payment services, not investment execution, brokerage, order routing, OTC trading, market making, or DeFi capability.", "Sobremesa Investments appears to hold and manage investments, but the public evidence does not explicitly show a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds structure."],
+  "confidence": "medium",
+  "recommended_manual_review": "no"
+}

@@ -1,0 +1,14 @@
+{
+  "task_index": "2791",
+  "investor_id": "266586-67",
+  "investor_name": "Blockseed Ventures",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "no", "defi": "no", "sub_fund": "no"},
+  "capability_labels": [],
+  "evidence_urls": ["https://www.blockseed.vc/index.html", "https://foundersuite.com/firms/blockseed-ventures", "https://cryptofundresearch.com/blockseed-ventures-crypto-fund/"],
+  "evidence_source_types": ["official_site", "secondary_profile", "secondary_profile"],
+  "evidence_summary": "Blockseed Ventures' official site describes it as investing in teams adopting and applying blockchain technologies, particularly infrastructure for a decentralized economy, and offering portfolio support such as mentorship, technical expertise, and Asian market access. Secondary profiles describe it as a Hong Kong crypto/digital asset venture fund making seed-stage blockchain investments. I found no explicit evidence that Blockseed Ventures itself operates OTC/block trading, algorithmic or quantitative trading, market making, execution/order-routing/brokerage services, a DeFi-native product/capability, or any sub-fund/feeder/umbrella/SPV/fund-of-funds structure.",
+  "yes_boundaries": [],
+  "no_boundaries": ["The official portfolio includes RIALTO.AI, described as an arbitrage and market maker, but that is a portfolio company capability and does not confer market_making or algorithm_trading to Blockseed Ventures.", "The official portfolio includes TokenCapital, described as an ICO exchange, but that is a portfolio company and does not establish execution_services for Blockseed Ventures.", "The official site markets blockchain and decentralized-economy investing, but it does not explicitly market Blockseed Ventures as operating or specializing in DeFi-native products or capabilities; blockchain investment focus alone is insufficient for defi=yes.", "A partner's prior CTO role at BTCChina is historical individual experience, not an operating platform attributable to Blockseed Ventures for execution_services or related trading capabilities.", "Secondary profiles call Blockseed a crypto venture fund or digital asset venture fund, but this is a standard VC/fund-manager description and is not evidence of sub_fund structures."],
+  "confidence": "high",
+  "recommended_manual_review": "no"
+}

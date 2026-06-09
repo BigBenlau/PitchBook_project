@@ -1,0 +1,14 @@
+{
+  "task_index": "2894",
+  "investor_id": "753042-25",
+  "investor_name": "Faze Banks",
+  "capabilities": {"otc_trading": "no", "algorithm_trading": "no", "market_making": "no", "execution_services": "no", "defi": "no", "sub_fund": "no"},
+  "capability_labels": [],
+  "evidence_urls": ["https://cryptorank.io/funds/faze-banks/analytics", "https://www.coincarp.com/investor/faze-banks/", "https://investors.gamesquare.com/news/news-details/2024/GameSquare-Announces-Formation-of-FaZe-Media-a-Creator-led-IP-and-Media-Company-led-by-CEO-FaZe-Banks-and-Backed-by-11-Million-Investment-from-Matt-Kalish/default.aspx", "https://crypto.news/faze-crypto-drama-deepens-as-leaked-chats-expose-backdoor-dealings/"],
+  "evidence_source_types": ["secondary_profile", "secondary_profile", "official_site", "news_or_blog"],
+  "evidence_summary": "Public profiles identify FaZe Banks as an angel investor/crypto investor with Web3 or gaming portfolio investments, while GameSquare describes his attributable operating role as CEO of FaZe Media, a creator-led IP and internet media company. I found no evidence that he or an attributable operating platform runs an OTC desk, algorithmic/quant trading, market making, execution/brokerage/order-routing services, DeFi-native products, or a sub-fund/feeder/SPV/fund platform. A crypto.news report alleges he sought OTC token purchases in the MLG token controversy, but that is a reported attempt to buy tokens privately, not evidence of an investor capability or OTC trading desk.",
+  "yes_boundaries": [],
+  "no_boundaries": ["Crypto/Web3 investments and memecoin/NFT activity do not establish DeFi-native operating capability under Part6.", "The reported MLG OTC-token-purchase allegation is not enough for otc_trading because it does not show an OTC desk, block-trading service, bilateral trading business, or marketed trading capability operated by FaZe Banks.", "FaZe Media/FaZe Clan evidence supports creator, media, gaming, esports, sponsorship, and merchandise activity, not execution services, market making, algorithmic trading, or sub-fund activity.", "CryptoRank's generic 'Crypto Fund' page label is outweighed by the individual angel-investor context and does not show a sub-fund, feeder, umbrella, parallel fund, SPV, fund platform, or fund-of-funds."],
+  "confidence": "medium",
+  "recommended_manual_review": "no"
+}
