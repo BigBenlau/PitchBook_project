@@ -46,7 +46,7 @@ DEFAULT_SPLIT_BATCH_RESPAWN_THRESHOLD = 5
 DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 3
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
 DEFAULT_WORKER_SANDBOX = "danger-full-access"
-DEFAULT_WORKER_MODEL = "gpt-5.4-mini"
+DEFAULT_WORKER_MODEL = "gpt-5.5"
 DEFAULT_SPLIT_SHARD_SIZE = 15
 DEFAULT_SPLIT_SHARD_COUNT = 2
 SPLIT_BATCH_LAUNCH_REASON = "split_batch_2x15"
@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
+    parser.add_argument("--final-dir", type=Path, default=DEFAULT_FINAL_DIR)
     parser.add_argument("--schedule-csv", type=Path, default=None)
     parser.add_argument("--start-round-index", type=int, required=True)
     parser.add_argument("--round-count", type=int, required=True)
@@ -390,6 +391,8 @@ def parse_iso_optional(value: str) -> datetime | None:
 def write_long_tail_backlog(
     runs_dir: Path,
     deferred_rows: list[dict[str, str]],
+    *,
+    final_dir: Path = DEFAULT_FINAL_DIR,
 ) -> None:
     csv_path = runs_dir / DEFERRED_LONG_TAIL_CSV
     md_path = runs_dir / DEFERRED_LONG_TAIL_MD
@@ -459,7 +462,7 @@ def write_long_tail_backlog(
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    backlog_path = GLOBAL_LONG_TAIL_BACKLOG_CSV
+    backlog_path = final_dir / "long_tail_batches_pending.csv"
     existing_rows = load_csv_rows(backlog_path)
     index: dict[str, dict[str, str]] = {}
     for row in existing_rows:
@@ -558,6 +561,7 @@ def mark_long_tail_deferred(
     schedule_fieldnames: list[str] | None = None,
     runs_dir: Path,
     events_log: Path,
+    final_dir: Path = DEFAULT_FINAL_DIR,
 ) -> list[dict[str, str]]:
     if not deferred_rows:
         return schedule_rows
@@ -608,7 +612,7 @@ def mark_long_tail_deferred(
     if not fieldnames and updated_rows:
         fieldnames = list(updated_rows[0].keys())
     write_schedule_with_fields(schedule_csv, fieldnames, updated_rows)
-    write_long_tail_backlog(runs_dir, deferred_rows)
+    write_long_tail_backlog(runs_dir, deferred_rows, final_dir=final_dir)
     return updated_rows
 
 
@@ -626,11 +630,13 @@ def set_supervisor_context(
     registry_json: Path,
     events_log: Path,
     target_rounds: list[int],
+    final_dir: Path = DEFAULT_FINAL_DIR,
 ) -> None:
     SUPERVISOR_CONTEXT.clear()
     SUPERVISOR_CONTEXT.update(
         {
             "runs_dir": runs_dir,
+            "final_dir": final_dir,
             "schedule_csv": schedule_csv,
             "state_json": state_json,
             "registry_json": registry_json,
@@ -1770,7 +1776,7 @@ def respawn_split_shard(
     entry = spawn_instruction_worker(
         instructions_file=Path(str(shard["instructions_file"])),
         final_message_path=Path(str(shard["final_message_path"])),
-        model="gpt-5.4-mini",
+        model=os.environ.get("PART6_WORKER_MODEL") or DEFAULT_WORKER_MODEL,
         round_index=parse_int(row.get("round_index"), 0),
         worker_slot=parse_int(row.get("worker_slot"), 0),
         batch_file=batch_file,
@@ -2179,6 +2185,8 @@ def run_lint(round_index: int, *, runs_dir: Path, events_log: Path) -> bool:
 
 
 def run_collect(round_index: int, *, runs_dir: Path, events_log: Path) -> bool:
+    final_dir = Path(SUPERVISOR_CONTEXT.get("final_dir") or DEFAULT_FINAL_DIR).resolve()
+    final_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
         str(SCRIPT_DIR / "3_collect_results.py"),
@@ -2190,13 +2198,13 @@ def run_collect(round_index: int, *, runs_dir: Path, events_log: Path) -> bool:
         "--fail-on-identity-drift",
         "--skip-verification",
         "--output-csv",
-        str((DEFAULT_FINAL_DIR / "results.csv").resolve()),
+        str((final_dir / "results.csv").resolve()),
         "--manual-review-csv",
-        str((DEFAULT_FINAL_DIR / "needs_manual_review.csv").resolve()),
+        str((final_dir / "needs_manual_review.csv").resolve()),
         "--classifier-results-csv",
-        str((DEFAULT_FINAL_DIR / "classifier_results.csv").resolve()),
+        str((final_dir / "classifier_results.csv").resolve()),
         "--verification-findings-csv",
-        str((DEFAULT_FINAL_DIR / "verification_findings.csv").resolve()),
+        str((final_dir / "verification_findings.csv").resolve()),
         "--checkpoint-json",
         str((runs_dir / DEFAULT_COLLECT_CHECKPOINT_JSON).resolve()),
     ]
@@ -2227,6 +2235,8 @@ def main() -> None:
         raise SystemExit("--split-batch-failure-threshold must be greater than 0.")
 
     runs_dir = args.runs_dir.resolve()
+    final_dir = args.final_dir.resolve()
+    final_dir.mkdir(parents=True, exist_ok=True)
     schedule_csv = resolve_runs_path(runs_dir, args.schedule_csv, DEFAULT_SCHEDULE_CSV)
     state_json = resolve_runs_path(runs_dir, args.state_json, DEFAULT_STATE_JSON)
     registry_json = resolve_runs_path(runs_dir, args.registry_json, DEFAULT_REGISTRY_JSON)
@@ -2235,6 +2245,7 @@ def main() -> None:
     target_rounds = list(range(args.start_round_index, args.start_round_index + args.round_count))
     set_supervisor_context(
         runs_dir=runs_dir,
+        final_dir=final_dir,
         schedule_csv=schedule_csv,
         state_json=state_json,
         registry_json=registry_json,
@@ -2259,6 +2270,7 @@ def main() -> None:
             f"poll={args.poll_seconds}s startup_timeout={args.startup_no_row_timeout_seconds}s "
             f"stall_timeout={args.partial_stall_timeout_seconds}s "
             f"batch_timeout={args.batch_timeout_seconds}s "
+            f"final_dir={final_dir} "
             f"split_thresholds=respawn>={args.split_batch_respawn_threshold},failures>={args.split_batch_failure_threshold}"
         ),
     )
@@ -2374,6 +2386,7 @@ def main() -> None:
                     schedule_fieldnames=schedule_fieldnames,
                     runs_dir=runs_dir,
                     events_log=events_log,
+                    final_dir=final_dir,
                 )
                 save_registry(registry_json, registry)
                 write_state(
@@ -2491,6 +2504,7 @@ def main() -> None:
                         schedule_fieldnames=schedule_fieldnames,
                         runs_dir=runs_dir,
                         events_log=events_log,
+                        final_dir=final_dir,
                     )
                     save_registry(registry_json, registry)
                     write_state(

@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--runs-dir", type=Path, default=ROUND.DEFAULT_RUNS_DIR)
+    parser.add_argument("--final-dir", type=Path, default=ROUND.DEFAULT_FINAL_DIR)
     parser.add_argument("--schedule-csv", type=Path, default=None)
     parser.add_argument("--start-round-index", type=int, required=True)
     parser.add_argument("--round-count", type=int, required=True)
@@ -857,9 +858,11 @@ def run_collect_for_batches(
     batch_files: list[str],
     *,
     runs_dir: Path,
+    final_dir: Path,
     events_log: Path,
     skip_verification: bool = False,
 ) -> bool:
+    final_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
         str(SCRIPT_DIR / "3_collect_results.py"),
@@ -868,13 +871,13 @@ def run_collect_for_batches(
         "--repair-identity-drift-in-place",
         "--fail-on-identity-drift",
         "--output-csv",
-        str((ROUND.DEFAULT_FINAL_DIR / "results.csv").resolve()),
+        str((final_dir / "results.csv").resolve()),
         "--manual-review-csv",
-        str((ROUND.DEFAULT_FINAL_DIR / "needs_manual_review.csv").resolve()),
+        str((final_dir / "needs_manual_review.csv").resolve()),
         "--classifier-results-csv",
-        str((ROUND.DEFAULT_FINAL_DIR / "classifier_results.csv").resolve()),
+        str((final_dir / "classifier_results.csv").resolve()),
         "--verification-findings-csv",
-        str((ROUND.DEFAULT_FINAL_DIR / "verification_findings.csv").resolve()),
+        str((final_dir / "verification_findings.csv").resolve()),
         "--checkpoint-json",
         str((runs_dir / ROUND.DEFAULT_COLLECT_CHECKPOINT_JSON).resolve()),
     ]
@@ -1458,6 +1461,8 @@ def main() -> None:
         raise SystemExit("--split-startup-no-row-shard-limit must be greater than 0.")
 
     runs_dir = args.runs_dir.resolve()
+    final_dir = args.final_dir.resolve()
+    final_dir.mkdir(parents=True, exist_ok=True)
     schedule_csv = ROUND.resolve_runs_path(runs_dir, args.schedule_csv, ROUND.DEFAULT_SCHEDULE_CSV)
     state_json = ROUND.resolve_runs_path(runs_dir, args.state_json, ROUND.DEFAULT_STATE_JSON)
     registry_json = ROUND.resolve_runs_path(runs_dir, args.registry_json, ROUND.DEFAULT_REGISTRY_JSON)
@@ -1466,6 +1471,7 @@ def main() -> None:
     target_rounds = list(range(args.start_round_index, args.start_round_index + args.round_count))
     ROUND.set_supervisor_context(
         runs_dir=runs_dir,
+        final_dir=final_dir,
         schedule_csv=schedule_csv,
         state_json=state_json,
         registry_json=registry_json,
@@ -1499,6 +1505,7 @@ def main() -> None:
             f"startup_timeout={args.startup_no_row_timeout_seconds}s "
             f"stall_timeout={args.partial_stall_timeout_seconds}s "
             f"batch_timeout={args.batch_timeout_seconds}s "
+            f"final_dir={final_dir} "
             f"split_thresholds=respawn>={args.split_batch_respawn_threshold},failures>={args.split_batch_failure_threshold} "
             f"split_startup_no_row_shard_limit={args.split_startup_no_row_shard_limit}"
         ),
@@ -1607,6 +1614,7 @@ def main() -> None:
                     schedule_fieldnames=fieldnames,
                     runs_dir=runs_dir,
                     events_log=events_log,
+                    final_dir=final_dir,
                 )
             ROUND.log_event(
                 events_log,
@@ -1730,6 +1738,7 @@ def main() -> None:
                     schedule_fieldnames=fieldnames,
                     runs_dir=runs_dir,
                     events_log=events_log,
+                    final_dir=final_dir,
                 )
         if deferred_any:
             ROUND.save_registry(registry_json, registry)
@@ -1933,6 +1942,7 @@ def main() -> None:
             collect_ok = run_collect_for_batches(
                 [batch_file],
                 runs_dir=runs_dir,
+                final_dir=final_dir,
                 events_log=events_log,
                 skip_verification=collect_skip_verification,
             )

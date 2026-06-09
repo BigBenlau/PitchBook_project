@@ -923,6 +923,7 @@ def render_attempt_instruction(
         "- Schema guard: never write `search_tier = skip_candidate` with `crypto_native_likelihood` or `operating_capability_likelihood` equal to `high`, `medium`, or `unclear`; use `light` or `full` when either likelihood is not `none`/`low`.\n"
         "- Schema guard: JSON-list fields must be written through a CSV writer or otherwise correctly quoted so embedded commas cannot split columns.\n"
         "- Schema guard: `completed_at` must be a literal ISO-8601 timestamp, not shell syntax; `evidence_urls` and `evidence_source_types` are pipe-list fields, so use blank rather than `[]` for no-search skip rows.\n"
+        "- Schema guard: `evidence_summary` must be non-empty for every result row, including no-search `skip_candidate` rows.\n"
         "- The harness watches startup no-row and partial-stall conditions. Lack of row growth may cause this attempt to be terminated.\n\n"
         f"{WRAPPER_BEGIN}\n\n"
         f"{base_instruction_text.rstrip()}\n\n"
@@ -1092,8 +1093,8 @@ def choose_escalation(row: dict[str, str], policy: dict[str, Any]) -> dict[str, 
     if chosen is None:
         chosen = {
             "name": "fallback",
-            "model": "gpt-5.4-mini",
-            "reasoning_effort": "medium",
+            "model": "gpt-5.5",
+            "reasoning_effort": "xhigh",
             "preferred_attempt_mode": "fresh_full_batch",
         }
     return chosen
@@ -1121,8 +1122,8 @@ def launch_start_index(attempt_mode: str, inspection: dict[str, Any]) -> int:
 
 def build_launch_row(row: dict[str, str], inspection: dict[str, Any], policy: dict[str, Any]) -> dict[str, str]:
     rule = choose_escalation(row, policy)
-    model = os.environ.get("PART6_WORKER_MODEL") or str(rule.get("model", "gpt-5.4-mini"))
-    reasoning_effort = os.environ.get("PART6_REASONING_EFFORT") or str(rule.get("reasoning_effort", "medium"))
+    model = os.environ.get("PART6_WORKER_MODEL") or str(rule.get("model", "gpt-5.5"))
+    reasoning_effort = os.environ.get("PART6_REASONING_EFFORT") or str(rule.get("reasoning_effort", "xhigh"))
     attempt_mode = row.get("prepared_mode") or derive_attempt_mode(str(rule.get("preferred_attempt_mode", "fresh_full_batch")), inspection)
     start_index = launch_start_index(attempt_mode, inspection)
     tasks = inspection["tasks"]
@@ -1545,8 +1546,8 @@ def watch_round(
                     "lease_id": updated.get("lease_id", ""),
                     "action": "kill_and_respawn",
                     "recommended_mode": attempt_mode,
-                    "model": str(rule.get("model", "gpt-5.4-mini")),
-                    "reasoning_effort": str(rule.get("reasoning_effort", "medium")),
+                    "model": str(rule.get("model", "gpt-5.5")),
+                    "reasoning_effort": str(rule.get("reasoning_effort", "xhigh")),
                     "reason": failure_type,
                     "classifier_rows": str(classifier_rows),
                     "result_rows": str(result_rows),
@@ -1566,8 +1567,8 @@ def watch_round(
                     "lease_id": updated.get("lease_id", ""),
                     "action": "rotate_segment",
                     "recommended_mode": "continue_from_prefix",
-                    "model": str(rule.get("model", "gpt-5.4-mini")),
-                    "reasoning_effort": str(rule.get("reasoning_effort", "medium")),
+                    "model": str(rule.get("model", "gpt-5.5")),
+                    "reasoning_effort": str(rule.get("reasoning_effort", "xhigh")),
                     "reason": planned_rotate_reason,
                     "classifier_rows": str(classifier_rows),
                     "result_rows": str(result_rows),

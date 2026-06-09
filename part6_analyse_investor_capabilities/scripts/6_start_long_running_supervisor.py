@@ -23,7 +23,8 @@ REPO_ROOT = PART6_DIR.parent
 
 DEFAULT_BATCH_DIR = REPO_ROOT / "part5_to_part6" / "output" / "part6_batches"
 DEFAULT_RUNS_PARENT_DIR = PART6_DIR / "agent_runs"
-DEFAULT_FINAL_RESULTS_CSV = PART6_DIR / "agent_runs" / "crypto_investor" / "results.csv"
+DEFAULT_FINAL_DIR = PART6_DIR / "agent_runs" / "crypto_investor"
+DEFAULT_FINAL_RESULTS_CSV = DEFAULT_FINAL_DIR / "results.csv"
 DEFAULT_RUN_PREFIX = "crypto_investor_parallel_eval"
 DEFAULT_LIVE_LOG_NAME = "supervisor_live.log"
 DEFAULT_LATEST_JOB_JSON = PART6_DIR / "agent_runs" / "crypto_investor_longrun_latest.json"
@@ -63,7 +64,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-dir", type=Path, default=DEFAULT_BATCH_DIR)
     parser.add_argument("--runs-parent-dir", type=Path, default=DEFAULT_RUNS_PARENT_DIR)
-    parser.add_argument("--final-results-csv", type=Path, default=DEFAULT_FINAL_RESULTS_CSV)
+    parser.add_argument(
+        "--final-dir",
+        type=Path,
+        default=DEFAULT_FINAL_DIR,
+        help="Final output directory used by collect. Defaults to agent_runs/crypto_investor.",
+    )
+    parser.add_argument(
+        "--final-results-csv",
+        type=Path,
+        default=None,
+        help=(
+            "CSV used only to detect already-completed task indexes before launch. "
+            "Defaults to <final-dir>/results.csv."
+        ),
+    )
     parser.add_argument("--latest-job-json", type=Path, default=DEFAULT_LATEST_JOB_JSON)
     parser.add_argument("--run-prefix", default=DEFAULT_RUN_PREFIX)
     parser.add_argument("--round-count", type=int, default=10)
@@ -327,6 +342,7 @@ def run_prepare(
 def build_supervisor_command(
     *,
     runs_dir: Path,
+    final_dir: Path,
     round_count: int,
     workers: int,
     scheduler_mode: str,
@@ -344,6 +360,8 @@ def build_supervisor_command(
         str(SCRIPT_DIR / supervisor_script),
         "--runs-dir",
         str(runs_dir),
+        "--final-dir",
+        str(final_dir),
         "--start-round-index",
         "1",
         "--round-count",
@@ -390,10 +408,12 @@ def main() -> None:
 
     batch_dir = args.batch_dir.resolve()
     runs_parent_dir = args.runs_parent_dir.resolve()
-    final_results_csv = args.final_results_csv.resolve()
+    final_dir = args.final_dir.resolve()
+    final_results_csv = args.final_results_csv.resolve() if args.final_results_csv else (final_dir / "results.csv").resolve()
     latest_job_json = args.latest_job_json.resolve()
     codex_bin = resolve_codex_bin(DEFAULT_CODEX_BIN)
     runs_parent_dir.mkdir(parents=True, exist_ok=True)
+    final_dir.mkdir(parents=True, exist_ok=True)
     latest_job_json.parent.mkdir(parents=True, exist_ok=True)
 
     ensure_no_active_job(latest_job_json, allow_parallel=args.allow_parallel)
@@ -428,6 +448,7 @@ def main() -> None:
 
     supervisor_cmd = build_supervisor_command(
         runs_dir=runs_dir,
+        final_dir=final_dir,
         round_count=actual_round_count,
         workers=args.workers,
         scheduler_mode=args.scheduler_mode,
@@ -456,6 +477,8 @@ def main() -> None:
         "state_json": str((runs_dir / "supervisor_state.json").resolve()),
         "registry_json": str((runs_dir / "supervisor_registry.json").resolve()),
         "live_log": str(log_path.resolve()),
+        "final_dir": str(final_dir),
+        "final_results_csv": str(final_results_csv),
         "start_batch": first_meta.number,
         "end_batch": last_meta.number,
         "first_task_index": first_meta.first_task_index,
