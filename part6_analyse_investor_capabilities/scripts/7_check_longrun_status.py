@@ -26,8 +26,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Read the latest long-running crypto-investor supervisor metadata and report "
-            "whether the job is still running, which round it is on, and the current "
-            "batch / worker progress."
+            "whether the job is still running, heartbeat freshness, backlog counts, "
+            "active workers, and current running batch progress."
         )
     )
     parser.add_argument("--latest-job-json", type=Path, default=DEFAULT_LATEST_JOB_JSON)
@@ -253,7 +253,7 @@ def row_has_open_queue_work(row: dict[str, str]) -> bool:
     return True
 
 
-def build_backlog_summary(schedule_rows: list[dict[str, str]], scheduler_mode: str) -> dict[str, object]:
+def build_backlog_summary(schedule_rows: list[dict[str, str]]) -> dict[str, object]:
     waiting_rows: list[dict[str, str]] = []
     tail_retry_rows: list[dict[str, str]] = []
     collect_rows: list[dict[str, str]] = []
@@ -267,7 +267,7 @@ def build_backlog_summary(schedule_rows: list[dict[str, str]], scheduler_mode: s
         status = effective_row_status(row)
         queue_state = str(row.get("queue_state") or "").strip()
         collect_state = str(row.get("collect_state") or "").strip()
-        if row_has_open_queue_work(row) if scheduler_mode == "queue" else not row_is_resolved(row):
+        if row_has_open_queue_work(row):
             open_rounds.add(round_index)
         if status in {"prepared", "needs_rerun"} and queue_state == "tail_retry_pending":
             tail_retry_rows.append(row)
@@ -484,16 +484,16 @@ def summarize_rounds(state: dict[str, object], schedule_rows: list[dict[str, str
     return output
 
 
-def current_round_batches(schedule_rows: list[dict[str, str]], current_round_index: int | None) -> list[dict[str, object]]:
-    if current_round_index is None:
+def batches_for_round(schedule_rows: list[dict[str, str]], round_index: int | None) -> list[dict[str, object]]:
+    if round_index is None:
         return []
     rows: list[dict[str, object]] = []
     for row in schedule_rows:
         try:
-            round_index = int(row.get("round_index") or "0")
+            row_round_index = int(row.get("round_index") or "0")
         except ValueError:
             continue
-        if round_index != current_round_index:
+        if row_round_index != round_index:
             continue
         rows.append(
             {
@@ -663,18 +663,9 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         for item in managed_processes_raw
     ]
 
-    scheduler_mode = "round"
-    if latest_job and isinstance(latest_job.get("scheduler_mode"), str) and latest_job.get("scheduler_mode"):
-        scheduler_mode = str(latest_job.get("scheduler_mode"))
-    if isinstance(state, dict) and isinstance(state.get("scheduler_mode"), str) and state.get("scheduler_mode"):
-        scheduler_mode = str(state.get("scheduler_mode"))
-
-    state_current_round_index = parse_int(state.get("current_round_index")) if isinstance(state, dict) else None
-    backlog_summary = build_backlog_summary(schedule_rows, scheduler_mode)
+    scheduler_mode = "queue"
+    backlog_summary = build_backlog_summary(schedule_rows)
     active_progress = build_active_progress(state=state, schedule_rows=schedule_rows)
-    current_round_index = active_progress.get("frontier_round_index")
-    if current_round_index is None and scheduler_mode != "queue":
-        current_round_index = state_current_round_index
     earliest_open_round_index = backlog_summary.get("earliest_open_round_index")
 
     rounds = summarize_rounds(state or {}, schedule_rows)
@@ -694,6 +685,10 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         runs_dir=runs_dir,
     )
     heartbeat = latest_heartbeat(heartbeat_points)
+    heartbeat_age_seconds = None
+    heartbeat_at = parse_timestamp((heartbeat or {}).get("timestamp"))
+    if heartbeat_at is not None:
+        heartbeat_age_seconds = int((datetime.now(timezone.utc) - heartbeat_at).total_seconds())
     pid_visibility = "unknown"
     if managed_processes:
         pid_visibility = "visible" if any(item.get("pid_alive") for item in managed_processes) else "not_visible_from_current_context"
@@ -724,6 +719,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         "updated_at": state.get("updated_at") if state else None,
         "heartbeat_grace_seconds": args.heartbeat_grace_seconds,
         "latest_heartbeat": heartbeat,
+        "heartbeat_age_seconds": heartbeat_age_seconds,
         "pid_visibility": pid_visibility,
         "host_process_check": {
             "available": host_process_info["available"],
@@ -732,9 +728,6 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
             "lines": host_process_info["lines"],
         },
         "systemd_unit_check": systemd_unit,
-        "current_round_index": current_round_index,
-        "current_round_index_semantics": "active_progress_frontier_round_index",
-        "state_current_round_index": state_current_round_index,
         "earliest_open_round_index": earliest_open_round_index,
         "active_progress": active_progress,
         "backlog_summary": backlog_summary,
@@ -748,8 +741,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         "active_workers": managed_processes,
         "round_summaries": rounds,
         "active_batches": active_batches,
-        "current_round_batches": current_round_batches(schedule_rows, current_round_index),
-        "earliest_backlog_round_batches": current_round_batches(schedule_rows, earliest_open_round_index),
+        "earliest_backlog_group_batches": batches_for_round(schedule_rows, earliest_open_round_index),
         "stale_schedule_running_batches": stale_running_batches,
         "recent_events": events_tail,
     }
@@ -800,17 +792,13 @@ def print_human(payload: dict[str, object]) -> None:
         print(
             "latest_heartbeat: "
             f"{heartbeat.get('timestamp')} "
-            f"from {heartbeat.get('source')}"
+            f"from {heartbeat.get('source')} "
+            f"age_seconds={payload.get('heartbeat_age_seconds')}"
         )
-    print(
-        "current_round_index: "
-        f"{payload.get('current_round_index')} "
-        f"({payload.get('current_round_index_semantics')})"
-    )
-    if payload.get("state_current_round_index") is not None:
-        print(f"state_current_round_index: {payload.get('state_current_round_index')} (legacy/earliest-open in older queue states)")
+    else:
+        print("latest_heartbeat: none age_seconds=None")
     if payload.get("earliest_open_round_index") is not None:
-        print(f"earliest_open_round_index: {payload.get('earliest_open_round_index')}")
+        print(f"earliest_open_group_index: {payload.get('earliest_open_round_index')}")
     if payload.get("max_workers") is not None:
         print(f"max_workers: {payload.get('max_workers')}")
 
@@ -819,9 +807,7 @@ def print_human(payload: dict[str, object]) -> None:
         print(
             "active_progress: "
             f"source={active_progress.get('source')} "
-            f"active_rounds={active_progress.get('active_round_indexes')} "
             f"batch_range={active_progress.get('active_batch_min')}->{active_progress.get('active_batch_max')} "
-            f"frontier_round={active_progress.get('frontier_round_index')} "
             f"frontier_batch={active_progress.get('frontier_batch_number')}"
         )
 
@@ -829,15 +815,15 @@ def print_human(payload: dict[str, object]) -> None:
     if isinstance(backlog_summary, dict):
         print(
             "backlog_summary: "
-            f"waiting={backlog_summary.get('waiting_count')}@round{backlog_summary.get('waiting_earliest_round_index')} "
-            f"tail_retry={backlog_summary.get('tail_retry_count')}@round{backlog_summary.get('tail_retry_earliest_round_index')} "
-            f"collect={backlog_summary.get('collect_count')}@round{backlog_summary.get('collect_earliest_round_index')} "
-            f"deferred={backlog_summary.get('deferred_count')}@round{backlog_summary.get('deferred_earliest_round_index')}"
+            f"waiting={backlog_summary.get('waiting_count')}@group{backlog_summary.get('waiting_earliest_round_index')} "
+            f"tail_retry={backlog_summary.get('tail_retry_count')}@group{backlog_summary.get('tail_retry_earliest_round_index')} "
+            f"collect={backlog_summary.get('collect_count')}@group{backlog_summary.get('collect_earliest_round_index')} "
+            f"deferred={backlog_summary.get('deferred_count')}@group{backlog_summary.get('deferred_earliest_round_index')}"
         )
 
     target_rounds = payload.get("target_rounds")
     if isinstance(target_rounds, list):
-        print("target_rounds:", ", ".join(str(item) for item in target_rounds))
+        print("target_queue_groups:", ", ".join(str(item) for item in target_rounds))
 
     active_workers = payload.get("active_workers")
     if isinstance(active_workers, list):
@@ -848,7 +834,7 @@ def print_human(payload: dict[str, object]) -> None:
                 continue
             print(
                 "  - "
-                f"round={item.get('round_index')} "
+                f"group={item.get('round_index')} "
                 f"batch={item.get('batch_file')} "
                 f"attempt={item.get('attempt_index')} "
                 f"pid={item.get('pid')} "
@@ -868,7 +854,7 @@ def print_human(payload: dict[str, object]) -> None:
                 "  - "
                 f"slot={item.get('slot_id')} "
                 f"state={item.get('state')} "
-                f"round={item.get('round_index')} "
+                f"group={item.get('round_index')} "
                 f"batch={item.get('batch_file')} "
                 f"attempt={item.get('attempt_index')} "
                 f"split_recovery={item.get('split_recovery')} "
@@ -884,7 +870,7 @@ def print_human(payload: dict[str, object]) -> None:
             print(
                 "  - "
                 f"slot={item.get('slot_id')} "
-                f"round={item.get('round_index')} "
+                f"group={item.get('round_index')} "
                 f"batch={item.get('batch_file')} "
                 f"attempt={item.get('attempt_index')} "
                 f"status={item.get('status')} "
@@ -892,6 +878,8 @@ def print_human(payload: dict[str, object]) -> None:
                 f"split_recovery={item.get('split_recovery')} "
                 f"pid_count={item.get('pid_count')}"
             )
+    else:
+        print("active_batches: none")
 
     for key in ["waiting_queue", "tail_retry_queue", "collect_queue", "deferred_queue"]:
         queue_items = payload.get(key)
@@ -909,41 +897,10 @@ def print_human(payload: dict[str, object]) -> None:
             for line in lines[:10]:
                 print(f"  {line}")
 
-    round_summaries = payload.get("round_summaries")
-    if isinstance(round_summaries, list) and round_summaries:
-        print("round_summaries:")
-        for item in round_summaries:
-            if not isinstance(item, dict):
-                continue
-            print(
-                "  - "
-                f"round={item.get('round_index')} "
-                f"completed={item.get('completed')} "
-                f"classifier_rows={item.get('classifier_rows')} "
-                f"result_rows={item.get('result_rows')} "
-                f"status_counts={item.get('status_counts')}"
-            )
-
-    current_round_batches = payload.get("current_round_batches")
-    if isinstance(current_round_batches, list) and current_round_batches:
-        print("current_round_batches (active frontier round only):")
-        for item in current_round_batches:
-            if not isinstance(item, dict):
-                continue
-            print(
-                "  - "
-                f"batch={item.get('batch_file')} "
-                f"status={item.get('status')} "
-                f"attempt={item.get('active_attempt')} "
-                f"classifier_rows={item.get('classifier_rows')} "
-                f"result_rows={item.get('result_rows')} "
-                f"prepared_reason={item.get('prepared_reason')}"
-            )
-
-    earliest_backlog_round_batches = payload.get("earliest_backlog_round_batches")
-    if isinstance(earliest_backlog_round_batches, list) and earliest_backlog_round_batches:
-        print("earliest_backlog_round_batches:")
-        for item in earliest_backlog_round_batches:
+    earliest_backlog_group_batches = payload.get("earliest_backlog_group_batches")
+    if isinstance(earliest_backlog_group_batches, list) and earliest_backlog_group_batches:
+        print("earliest_backlog_group_batches:")
+        for item in earliest_backlog_group_batches:
             if not isinstance(item, dict):
                 continue
             print(

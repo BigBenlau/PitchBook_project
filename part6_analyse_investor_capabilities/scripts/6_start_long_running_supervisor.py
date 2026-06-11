@@ -7,7 +7,6 @@ import json
 import math
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -31,10 +30,9 @@ DEFAULT_LATEST_JOB_JSON = PART6_DIR / "agent_runs" / "crypto_investor_longrun_la
 DEFAULT_SPLIT_BATCH_RESPAWN_THRESHOLD = 3
 DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 2
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 480
-DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS = 240
+DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS = 480
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_BATCH_TIMEOUT_SECONDS = 7200
-DEFAULT_NOHUP_BIN = "nohup"
 DEFAULT_SYSTEMD_RUN_BIN = "systemd-run"
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
 DEFAULT_DETACHED_STARTUP_WAIT_SECONDS = 15
@@ -57,9 +55,8 @@ class BatchMeta:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Prepare the next missing crypto-investor batch window and launch the round "
-            "supervisor as a detached long-running process. Detached mode prefers "
-            "systemd-run --user and falls back to nohup plus a new session."
+            "Prepare the next missing crypto-investor batch window and launch the "
+            "queue supervisor. Queue mode is the only supported scheduler."
         )
     )
     parser.add_argument("--batch-dir", type=Path, default=DEFAULT_BATCH_DIR)
@@ -83,12 +80,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-prefix", default=DEFAULT_RUN_PREFIX)
     parser.add_argument("--round-count", type=int, default=10)
     parser.add_argument("--workers", type=int, default=5)
-    parser.add_argument(
-        "--scheduler-mode",
-        choices=["round", "queue"],
-        default="queue",
-        help="Execution scheduler. `round` preserves the old round barrier; `queue` keeps slots full and collects completed batches independently.",
-    )
     parser.add_argument("--start-batch", type=int, default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--allow-parallel", action="store_true")
@@ -345,7 +336,6 @@ def build_supervisor_command(
     final_dir: Path,
     round_count: int,
     workers: int,
-    scheduler_mode: str,
     poll_seconds: int,
     batch_timeout_seconds: int,
     startup_timeout_seconds: int,
@@ -354,10 +344,9 @@ def build_supervisor_command(
     split_batch_failure_threshold: int,
     codex_bin: str,
 ) -> list[str]:
-    supervisor_script = "5_run_queue_supervisor.py" if scheduler_mode == "queue" else "5_run_round_supervisor.py"
     return [
         sys.executable,
-        str(SCRIPT_DIR / supervisor_script),
+        str(SCRIPT_DIR / "5_run_queue_supervisor.py"),
         "--runs-dir",
         str(runs_dir),
         "--final-dir",
@@ -366,11 +355,8 @@ def build_supervisor_command(
         "1",
         "--round-count",
         str(round_count),
-        *(
-            ["--max-workers", str(workers)]
-            if scheduler_mode == "queue"
-            else []
-        ),
+        "--max-workers",
+        str(workers),
         "--poll-seconds",
         str(poll_seconds),
         "--batch-timeout-seconds",
@@ -451,7 +437,6 @@ def main() -> None:
         final_dir=final_dir,
         round_count=actual_round_count,
         workers=args.workers,
-        scheduler_mode=args.scheduler_mode,
         poll_seconds=args.poll_seconds,
         batch_timeout_seconds=args.batch_timeout_seconds,
         startup_timeout_seconds=args.startup_no_row_timeout_seconds,
@@ -464,7 +449,7 @@ def main() -> None:
     log_path = runs_dir / DEFAULT_LIVE_LOG_NAME
     log_handle = log_path.open("a", encoding="utf-8")
     log_handle.write(
-        f"{utc_now().isoformat()} launching detached supervisor for batches "
+        f"{utc_now().isoformat()} launching queue supervisor for batches "
         f"{first_meta.number:04d}-{last_meta.number:04d}\n"
     )
     log_handle.flush()
@@ -485,7 +470,7 @@ def main() -> None:
         "last_task_index": last_meta.last_task_index,
         "batch_count": actual_batch_count,
         "workers": args.workers,
-        "scheduler_mode": args.scheduler_mode,
+        "scheduler_mode": "queue",
         "round_count_requested": args.round_count,
         "round_count_actual": actual_round_count,
         "batch_timeout_seconds": args.batch_timeout_seconds,
@@ -573,64 +558,20 @@ def main() -> None:
             print(f"Latest job JSON: {latest_job_json}")
             return
 
-        log_handle.write("systemd-run launch failed or unit did not bootstrap; falling back to nohup\n")
+        log_handle.write("systemd-run launch failed or unit did not bootstrap; no detached shell fallback is used\n")
         log_handle.write(completed.stdout)
         log_handle.write(completed.stderr)
         log_handle.flush()
 
-    detached_cmd = [DEFAULT_NOHUP_BIN, *supervisor_cmd]
-    shell_cmd = (
-        "nohup "
-        + " ".join(shlex.quote(part) for part in supervisor_cmd)
-        + f" >> {shlex.quote(str(log_path))} 2>&1 < /dev/null & echo $!"
-    )
-    launcher_state["detached_command"] = detached_cmd
-    launcher_state["detached_shell_command"] = shell_cmd
-    launcher_state["mode"] = "detached_nohup"
-
-    completed = subprocess.run(
-        ["/bin/bash", "-lc", shell_cmd],
-        cwd=REPO_ROOT,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if completed.returncode != 0:
-        log_handle.write(completed.stdout)
-        log_handle.write(completed.stderr)
-        log_handle.flush()
-        log_handle.close()
-        raise SystemExit(f"Failed to launch detached supervisor with nohup: returncode={completed.returncode}")
-
-    pid_text = (completed.stdout or "").strip().splitlines()[-1].strip() if (completed.stdout or "").strip() else ""
-    launcher_state["pid"] = int(pid_text) if pid_text.isdigit() else 0
-    launcher_state["status"] = "running" if launcher_state["pid"] else "launched_pid_unknown"
+    launcher_state["status"] = "launch_failed_no_systemd"
     write_json(runs_dir / "launcher_state.json", launcher_state)
     write_json(latest_job_json, launcher_state)
     log_handle.flush()
     log_handle.close()
-
-    if not wait_for_supervisor_bootstrap(runs_dir):
-        launcher_state["status"] = "launch_failed_no_supervisor_state"
-        write_json(runs_dir / "launcher_state.json", launcher_state)
-        write_json(latest_job_json, launcher_state)
-        raise SystemExit(
-            "Detached supervisor launch did not create supervisor_state.json or supervisor_events.log "
-            "within the startup wait window."
-        )
-
-    print(f"Detached supervisor started: pid={launcher_state['pid']}")
-    print(f"Runs dir: {runs_dir}")
-    print(f"Batch window: batch_{first_meta.number:04d} -> batch_{last_meta.number:04d}")
-    print(f"Task window: {first_meta.first_task_index} -> {last_meta.last_task_index}")
-    print(f"Schedule CSV: {runs_dir / 'schedule.csv'}")
-    print(f"Supervisor state: {runs_dir / 'supervisor_state.json'}")
-    print(f"Supervisor events: {runs_dir / 'supervisor_events.log'}")
-    print(f"Live log: {log_path}")
-    print(f"Latest job JSON: {latest_job_json}")
+    raise SystemExit(
+        "Detached launch requires systemd-run. Use --foreground inside screen/tmux "
+        "or run scripts/5_run_queue_supervisor.py directly."
+    )
 
 
 if __name__ == "__main__":

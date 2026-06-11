@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -17,6 +16,8 @@ from part6_schema import CLASSIFIER_CSV_COLUMNS, RESULT_CSV_COLUMNS
 SCRIPT_DIR = Path(__file__).resolve().parent
 PART6_DIR = SCRIPT_DIR.parent
 REPO_ROOT = PART6_DIR.parent
+FIXED_WORKER_MODEL = "gpt-5.5"
+FIXED_REASONING_EFFORT = "xhigh"
 RUNTIME_DIR = PART6_DIR / "runtime"
 DEFAULT_RUNS_DIR = PART6_DIR / "agent_runs" / "crypto_investor_parallel"
 DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
@@ -921,6 +922,7 @@ def render_attempt_instruction(
         "- Before the first completed investor is written, do not scan `manifest.csv`, prior `verification_findings.csv`, prior final outputs, or unrelated batch directories.\n"
         "- Before 2 completed investors are written, keep auxiliary lookups narrowly scoped to the current investor unless a specific ambiguity requires more.\n"
         "- Schema guard: never write `search_tier = skip_candidate` with `crypto_native_likelihood` or `operating_capability_likelihood` equal to `high`, `medium`, or `unclear`; use `light` or `full` when either likelihood is not `none`/`low`.\n"
+        "- Schema guard: `skip_candidate` is allowed only when the row is clearly and completely unrelated to crypto/Web3, financial services, investing/funds, trading/execution/liquidity, DeFi, and parent/sub-fund structure. If any possible relevance signal exists, use at least `search_tier = light` and perform agent search.\n"
         "- Schema guard: JSON-list fields must be written through a CSV writer or otherwise correctly quoted so embedded commas cannot split columns.\n"
         "- Schema guard: `completed_at` must be a literal ISO-8601 timestamp, not shell syntax; `evidence_urls` and `evidence_source_types` are pipe-list fields, so use blank rather than `[]` for no-search skip rows.\n"
         "- Schema guard: `evidence_summary` must be non-empty for every result row, including no-search `skip_candidate` rows.\n"
@@ -1122,8 +1124,8 @@ def launch_start_index(attempt_mode: str, inspection: dict[str, Any]) -> int:
 
 def build_launch_row(row: dict[str, str], inspection: dict[str, Any], policy: dict[str, Any]) -> dict[str, str]:
     rule = choose_escalation(row, policy)
-    model = os.environ.get("PART6_WORKER_MODEL") or str(rule.get("model", "gpt-5.5"))
-    reasoning_effort = os.environ.get("PART6_REASONING_EFFORT") or str(rule.get("reasoning_effort", "xhigh"))
+    model = FIXED_WORKER_MODEL
+    reasoning_effort = FIXED_REASONING_EFFORT
     attempt_mode = row.get("prepared_mode") or derive_attempt_mode(str(rule.get("preferred_attempt_mode", "fresh_full_batch")), inspection)
     start_index = launch_start_index(attempt_mode, inspection)
     tasks = inspection["tasks"]
@@ -1447,8 +1449,11 @@ def watch_round(
     current_time = now_utc()
     current_iso = current_time.isoformat()
     startup_timeout = startup_timeout_seconds or parse_optional_int(policy.get("timeouts", {}).get("startup_no_row_seconds"), 300)
-    stall_timeout = partial_stall_timeout_seconds or parse_optional_int(policy.get("timeouts", {}).get("partial_stall_seconds"), 240)
+    policy_stall_timeout = parse_optional_int(policy.get("timeouts", {}).get("partial_stall_seconds"), 480)
+    requested_stall_timeout = parse_optional_int(partial_stall_timeout_seconds, 0)
+    stall_timeout = max(requested_stall_timeout, policy_stall_timeout) if requested_stall_timeout else policy_stall_timeout
     segment_values = segment_policy_values(policy)
+    print(f"Effective runtime timeouts: startup_no_row={startup_timeout}s partial_stall={stall_timeout}s")
 
     for row in schedule_rows:
         updated = upgrade_row_to_attempt_architecture(row)

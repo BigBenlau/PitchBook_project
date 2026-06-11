@@ -7,6 +7,7 @@ import importlib.util
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -176,10 +177,6 @@ def load_schedule_with_queue_columns(
             updated_fields.append(field)
             changed = True
 
-    collected_round_cutoff = 0
-    if state_hint and str(state_hint.get("scheduler_mode") or "").strip() != "queue":
-        collected_round_cutoff = max(0, ROUND.parse_int(state_hint.get("current_round_index"), 0) - 1)
-
     normalized_rows: list[dict[str, str]] = []
     for index, raw_row in enumerate(raw_rows, start=1):
         updated = {field: str(raw_row.get(field, "") or "") for field in updated_fields}
@@ -192,18 +189,11 @@ def load_schedule_with_queue_columns(
         if collect_state not in COLLECT_STATE_VALUES:
             if status == "deferred_long_tail":
                 collect_state = "skipped"
-            elif status == "completed" and ROUND.parse_int(updated.get("round_index"), 0) <= collected_round_cutoff:
-                collect_state = "done"
             else:
                 collect_state = "pending"
             updated["collect_state"] = collect_state
             changed = True
-        if (
-            collect_state == "done"
-            and not updated.get("last_collected_attempt_index")
-            and status == "completed"
-            and ROUND.parse_int(updated.get("round_index"), 0) <= collected_round_cutoff
-        ):
+        if collect_state == "done" and not updated.get("last_collected_attempt_index") and status == "completed":
             updated["last_collected_attempt_index"] = str(updated.get("attempt_index") or "")
             changed = True
         normalized_tail_retry_pending = TAIL_RETRY_PENDING_VALUE if row_tail_retry_pending(updated) else ""
@@ -676,13 +666,10 @@ def write_state(
         }
     )
     earliest_open_round_index = earliest_open_round(schedule_rows, target_rounds)
-    current_round_index = active_rounds[-1] if active_rounds else earliest_open_round_index
     payload = {
         "updated_at": ROUND.iso_now(),
         "runs_dir": str(runs_dir),
         "target_rounds": target_rounds,
-        "current_round_index": current_round_index,
-        "current_round_index_semantics": "active_progress_frontier_round_index",
         "earliest_open_round_index": earliest_open_round_index,
         "active_progress": {
             "source": "supervisor_state.slots",
@@ -887,6 +874,102 @@ def run_collect_for_batches(
         cmd.extend(["--batch-file", batch_file])
     completed = ROUND.run_command(cmd, cwd=ROUND.REPO_ROOT, events_log=events_log, label="collect_batches")
     return completed.returncode == 0
+
+
+def run_completion_gate(
+    *,
+    runs_dir: Path,
+    final_dir: Path,
+    schedule_csv: Path,
+    events_log: Path,
+) -> bool:
+    lint_cmd = [
+        sys.executable,
+        str(SCRIPT_DIR / "3_collect_results.py"),
+        "--runs-dir",
+        str(runs_dir),
+        "--lint-only",
+        "--repair-identity-drift-in-place",
+        "--fail-on-identity-drift",
+    ]
+    lint_completed = ROUND.run_command(
+        lint_cmd,
+        cwd=ROUND.REPO_ROOT,
+        events_log=events_log,
+        label="completion_lint_all_batches",
+    )
+    if lint_completed.returncode != 0:
+        return False
+
+    validate_cmd = [
+        sys.executable,
+        str(SCRIPT_DIR / "10_validate_final_outputs.py"),
+        "--schedule-csv",
+        str(schedule_csv),
+        "--final-dir",
+        str(final_dir),
+    ]
+    validate_completed = ROUND.run_command(
+        validate_cmd,
+        cwd=ROUND.REPO_ROOT,
+        events_log=events_log,
+        label="completion_validate_final_outputs",
+    )
+    return validate_completed.returncode == 0
+
+
+def log_queue_supervisor_terminal_failure(exc: BaseException) -> None:
+    context = ROUND.SUPERVISOR_CONTEXT
+    events_log = context.get("events_log")
+    runs_dir = context.get("runs_dir")
+    schedule_csv = context.get("schedule_csv")
+    state_json = context.get("state_json")
+    registry_json = context.get("registry_json")
+    target_rounds = context.get("target_rounds")
+    max_workers = ROUND.parse_int(context.get("max_workers"), 1)
+    if not isinstance(events_log, Path):
+        return
+
+    detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip()
+    if isinstance(exc, SystemExit):
+        code = exc.code if isinstance(exc.code, int) else 1
+        if code == 0:
+            return
+        ROUND.log_event(events_log, f"[queue_supervisor:exit_nonzero] code={code} detail={detail}")
+    else:
+        ROUND.log_event(events_log, f"[queue_supervisor:fatal] {detail}")
+
+    if not all(isinstance(item, Path) for item in [runs_dir, schedule_csv, state_json, registry_json]):
+        return
+    if not isinstance(target_rounds, list) or not target_rounds:
+        return
+
+    try:
+        schedule_rows = ROUND.read_schedule(schedule_csv)
+    except BaseException:
+        schedule_rows = []
+    try:
+        registry = ROUND.cleanup_registry(ROUND.load_registry(registry_json))
+    except BaseException:
+        registry = []
+    if not schedule_rows:
+        return
+
+    try:
+        state_existing = ROUND.load_json_dict(state_json)
+        if max_workers <= 0:
+            max_workers = ROUND.parse_int(state_existing.get("max_workers"), 1)
+        write_state(
+            state_json,
+            runs_dir=runs_dir,
+            target_rounds=target_rounds,
+            phase="failed",
+            schedule_rows=schedule_rows,
+            registry=registry,
+            max_workers=max_workers,
+        )
+    except BaseException:
+        return
 
 
 def reset_csv_to_header(path: Path, fieldnames: list[str]) -> None:
@@ -1478,6 +1561,7 @@ def main() -> None:
         events_log=events_log,
         target_rounds=target_rounds,
     )
+    ROUND.SUPERVISOR_CONTEXT["max_workers"] = args.max_workers
 
     args.codex_bin = ROUND.resolve_codex_bin(args.codex_bin)
 
@@ -1523,6 +1607,24 @@ def main() -> None:
         )
 
         if queue_run_complete(schedule_rows, target_rounds) and not active_running_rows(schedule_rows, target_rounds, registry):
+            if not run_completion_gate(
+                runs_dir=runs_dir,
+                final_dir=final_dir,
+                schedule_csv=schedule_csv,
+                events_log=events_log,
+            ):
+                write_state(
+                    state_json,
+                    runs_dir=runs_dir,
+                    target_rounds=target_rounds,
+                    phase="final_lint_failed",
+                    schedule_rows=schedule_rows,
+                    registry=registry,
+                    max_workers=args.max_workers,
+                )
+                raise SystemExit(
+                    "Final completion gate failed. Full collect/lint or final CSV validation did not pass."
+                )
             write_state(
                 state_json,
                 runs_dir=runs_dir,
@@ -1980,5 +2082,5 @@ if __name__ == "__main__":
     try:
         main()
     except BaseException as exc:
-        ROUND.log_supervisor_terminal_failure(exc)
+        log_queue_supervisor_terminal_failure(exc)
         raise

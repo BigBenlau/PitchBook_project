@@ -39,7 +39,7 @@ DEFAULT_LOCK_FILE = "supervisor.lock"
 DEFAULT_EVENTS_LOG = "supervisor_events.log"
 DEFAULT_COLLECT_CHECKPOINT_JSON = "collect_checkpoint.json"
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 480
-DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS = 240
+DEFAULT_PARTIAL_STALL_TIMEOUT_SECONDS = 480
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_BATCH_TIMEOUT_SECONDS = 7200
 DEFAULT_SPLIT_BATCH_RESPAWN_THRESHOLD = 5
@@ -47,6 +47,7 @@ DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 3
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
 DEFAULT_WORKER_SANDBOX = "danger-full-access"
 DEFAULT_WORKER_MODEL = "gpt-5.5"
+DEFAULT_WORKER_REASONING_EFFORT = "xhigh"
 DEFAULT_SPLIT_SHARD_SIZE = 15
 DEFAULT_SPLIT_SHARD_COUNT = 2
 SPLIT_BATCH_LAUNCH_REASON = "split_batch_2x15"
@@ -683,17 +684,11 @@ def log_supervisor_terminal_failure(exc: BaseException) -> None:
     if not schedule_rows:
         return
 
-    current_round_index = target_rounds_raw[0]
-    state_existing = load_json_dict(state_json_raw)
-    if state_existing:
-        current_round_index = parse_int(state_existing.get("current_round_index"), current_round_index)
-
     try:
         write_state(
             state_json_raw,
             runs_dir=runs_dir_raw,
             target_rounds=target_rounds_raw,
-            current_round_index=current_round_index,
             phase="failed",
             schedule_rows=schedule_rows,
             registry=registry,
@@ -728,7 +723,6 @@ def write_state(
     *,
     runs_dir: Path,
     target_rounds: list[int],
-    current_round_index: int,
     phase: str,
     schedule_rows: list[dict[str, str]],
     registry: list[dict[str, Any]],
@@ -737,7 +731,6 @@ def write_state(
         "updated_at": iso_now(),
         "runs_dir": str(runs_dir),
         "target_rounds": target_rounds,
-        "current_round_index": current_round_index,
         "phase": phase,
         "scheduler_mode": "round",
         "strict_wait_for_all_rounds": True,
@@ -1123,8 +1116,8 @@ def spawn_worker(
         f"Read {instructions_file} and execute it fully. "
         "Obey its write scope and output paths exactly."
     )
-    model = os.environ.get("PART6_WORKER_MODEL") or launch_row.get("model") or DEFAULT_WORKER_MODEL
-    reasoning_effort = os.environ.get("PART6_REASONING_EFFORT") or launch_row.get("reasoning_effort") or ""
+    model = DEFAULT_WORKER_MODEL
+    reasoning_effort = DEFAULT_WORKER_REASONING_EFFORT
     cmd = [
         codex_bin,
         "-a",
@@ -1776,7 +1769,7 @@ def respawn_split_shard(
     entry = spawn_instruction_worker(
         instructions_file=Path(str(shard["instructions_file"])),
         final_message_path=Path(str(shard["final_message_path"])),
-        model=os.environ.get("PART6_WORKER_MODEL") or DEFAULT_WORKER_MODEL,
+        model=DEFAULT_WORKER_MODEL,
         round_index=parse_int(row.get("round_index"), 0),
         worker_slot=parse_int(row.get("worker_slot"), 0),
         batch_file=batch_file,
@@ -2222,6 +2215,10 @@ def ensure_requested_rounds_exist(schedule_rows: list[dict[str, str]], target_ro
 
 
 def main() -> None:
+    raise SystemExit(
+        "round-mode supervisor is disabled for part6. "
+        "Use scripts/5_run_queue_supervisor.py; queue mode is the only supported scheduler."
+    )
     args = parse_args()
     if args.start_round_index <= 0:
         raise SystemExit("--start-round-index must be greater than 0.")
@@ -2275,48 +2272,46 @@ def main() -> None:
         ),
     )
 
-    current_round_index = determine_resume_round_index(schedule_rows, target_rounds)
-    if current_round_index > target_rounds[-1]:
+    round_cursor_index = determine_resume_round_index(schedule_rows, target_rounds)
+    if round_cursor_index > target_rounds[-1]:
         registry = cleanup_registry(registry)
         save_registry(registry_json, registry)
         write_state(
             state_json,
             runs_dir=runs_dir,
             target_rounds=target_rounds,
-            current_round_index=target_rounds[-1],
             phase="completed",
             schedule_rows=schedule_rows,
             registry=registry,
         )
         log_event(events_log, f"[supervisor:complete] rounds={target_rounds[0]}-{target_rounds[-1]}")
         return
-    if current_round_index != target_rounds[0]:
+    if round_cursor_index != target_rounds[0]:
         log_event(
             events_log,
             (
                 "[supervisor:resume] "
-                f"requested_start_round={target_rounds[0]} resume_round={current_round_index}"
+                f"requested_start_round={target_rounds[0]} resume_round={round_cursor_index}"
             ),
         )
-    while current_round_index <= target_rounds[-1]:
+    while round_cursor_index <= target_rounds[-1]:
         schedule_rows = reconcile_deferred_long_tail_rows(schedule_csv, read_schedule(schedule_csv))
         write_state(
             state_json,
             runs_dir=runs_dir,
             target_rounds=target_rounds,
-            current_round_index=current_round_index,
             phase="prepare",
             schedule_rows=schedule_rows,
             registry=registry,
         )
 
-        launch_rows = run_prepare(current_round_index, runs_dir=runs_dir, events_log=events_log)
+        launch_rows = run_prepare(round_cursor_index, runs_dir=runs_dir, events_log=events_log)
         if launch_rows:
             registry, schedule_rows = handle_launch_rows(
                 launch_rows,
                 schedule_csv=schedule_csv,
                 runs_dir=runs_dir,
-                round_index=current_round_index,
+                round_index=round_cursor_index,
                 registry=registry,
                 codex_bin=args.codex_bin,
                 events_log=events_log,
@@ -2330,18 +2325,18 @@ def main() -> None:
             schedule_rows, dead_worker_changed = mark_dead_worker_reruns(
                 schedule_csv,
                 schedule_rows,
-                round_index=current_round_index,
+                round_index=round_cursor_index,
                 registry=registry,
                 events_log=events_log,
             )
             if dead_worker_changed:
-                launch_rows = run_prepare(current_round_index, runs_dir=runs_dir, events_log=events_log)
+                launch_rows = run_prepare(round_cursor_index, runs_dir=runs_dir, events_log=events_log)
                 if launch_rows:
                     registry, schedule_rows = handle_launch_rows(
                         launch_rows,
                         schedule_csv=schedule_csv,
                         runs_dir=runs_dir,
-                        round_index=current_round_index,
+                        round_index=round_cursor_index,
                         registry=registry,
                         codex_bin=args.codex_bin,
                         events_log=events_log,
@@ -2351,7 +2346,7 @@ def main() -> None:
             schedule_rows, registry, split_changed = manage_split_recoveries(
                 schedule_csv,
                 schedule_rows,
-                round_index=current_round_index,
+                round_index=round_cursor_index,
                 registry=registry,
                 codex_bin=args.codex_bin,
                 events_log=events_log,
@@ -2363,7 +2358,7 @@ def main() -> None:
 
             deferred_rows = analyze_long_tail_deferred_rows(
                 schedule_rows,
-                current_round_index,
+                round_cursor_index,
                 timeout_seconds=args.batch_timeout_seconds,
             )
             if deferred_rows:
@@ -2376,7 +2371,7 @@ def main() -> None:
                     deferred_batch_files,
                     registry,
                     events_log,
-                    reason=f"round_{current_round_index}_long_tail_timeout",
+                    reason=f"round_{round_cursor_index}_long_tail_timeout",
                 )
                 schedule_fieldnames, _ = load_csv_rows_with_fields(schedule_csv)
                 schedule_rows = mark_long_tail_deferred(
@@ -2393,7 +2388,6 @@ def main() -> None:
                     state_json,
                     runs_dir=runs_dir,
                     target_rounds=target_rounds,
-                    current_round_index=current_round_index,
                     phase="deferred_long_tail",
                     schedule_rows=schedule_rows,
                     registry=registry,
@@ -2403,7 +2397,7 @@ def main() -> None:
             if not args.disable_split_batch_recovery:
                 split_rows = select_split_recovery_candidates(
                     schedule_rows,
-                    current_round_index,
+                    round_cursor_index,
                     respawn_threshold=args.split_batch_respawn_threshold,
                     failure_threshold=args.split_batch_failure_threshold,
                 )
@@ -2412,7 +2406,7 @@ def main() -> None:
                         {str(row.get("batch_file") or "") for row in split_rows},
                         registry,
                         events_log,
-                        reason=f"round_{current_round_index}_split_recovery",
+                        reason=f"round_{round_cursor_index}_split_recovery",
                     )
                     schedule_rows = mark_split_recovery_requested(
                         schedule_csv,
@@ -2421,13 +2415,13 @@ def main() -> None:
                         events_log=events_log,
                     )
                     save_registry(registry_json, registry)
-                    launch_rows = run_prepare(current_round_index, runs_dir=runs_dir, events_log=events_log)
+                    launch_rows = run_prepare(round_cursor_index, runs_dir=runs_dir, events_log=events_log)
                     if launch_rows:
                         registry, schedule_rows = handle_launch_rows(
                             launch_rows,
                             schedule_csv=schedule_csv,
                             runs_dir=runs_dir,
-                            round_index=current_round_index,
+                            round_index=round_cursor_index,
                             registry=registry,
                             codex_bin=args.codex_bin,
                             events_log=events_log,
@@ -2437,7 +2431,6 @@ def main() -> None:
                         state_json,
                         runs_dir=runs_dir,
                         target_rounds=target_rounds,
-                        current_round_index=current_round_index,
                         phase="split_recovery",
                         schedule_rows=schedule_rows,
                         registry=registry,
@@ -2447,41 +2440,39 @@ def main() -> None:
                 state_json,
                 runs_dir=runs_dir,
                 target_rounds=target_rounds,
-                current_round_index=current_round_index,
                 phase="watch",
                 schedule_rows=schedule_rows,
                 registry=registry,
             )
 
-            if round_completed(schedule_rows, current_round_index):
-                registry = terminate_for_round(current_round_index, registry, events_log)
+            if round_completed(schedule_rows, round_cursor_index):
+                registry = terminate_for_round(round_cursor_index, registry, events_log)
                 save_registry(registry_json, registry)
                 write_state(
                     state_json,
                     runs_dir=runs_dir,
                     target_rounds=target_rounds,
-                    current_round_index=current_round_index,
                     phase="lint",
                     schedule_rows=read_schedule(schedule_csv),
                     registry=registry,
                 )
-                lint_ok = run_lint(current_round_index, runs_dir=runs_dir, events_log=events_log)
+                lint_ok = run_lint(round_cursor_index, runs_dir=runs_dir, events_log=events_log)
                 schedule_rows = reconcile_deferred_long_tail_rows(schedule_csv, read_schedule(schedule_csv))
                 if lint_ok:
-                    collect_ok = run_collect(current_round_index, runs_dir=runs_dir, events_log=events_log)
+                    collect_ok = run_collect(round_cursor_index, runs_dir=runs_dir, events_log=events_log)
                     if not collect_ok:
                         raise SystemExit(
-                            f"Round {current_round_index} lint passed, but collect failed. "
+                            f"Round {round_cursor_index} lint passed, but collect failed. "
                             "Global final outputs were not safely synchronized."
                         )
-                    log_event(events_log, f"[round:complete] round={current_round_index} lint_clean=yes")
-                    current_round_index += 1
+                    log_event(events_log, f"[round:complete] round={round_cursor_index} lint_clean=yes")
+                    round_cursor_index += 1
                     break
 
-                log_event(events_log, f"[round:lint_failed] round={current_round_index} re-entering prepare")
+                log_event(events_log, f"[round:lint_failed] round={round_cursor_index} re-entering prepare")
                 deferred_rows = analyze_long_tail_deferred_rows(
                     schedule_rows,
-                    current_round_index,
+                    round_cursor_index,
                     timeout_seconds=args.batch_timeout_seconds,
                 )
                 if deferred_rows:
@@ -2494,7 +2485,7 @@ def main() -> None:
                         deferred_batch_files,
                         registry,
                         events_log,
-                        reason=f"round_{current_round_index}_long_tail_timeout_after_lint",
+                        reason=f"round_{round_cursor_index}_long_tail_timeout_after_lint",
                     )
                     schedule_fieldnames, _ = load_csv_rows_with_fields(schedule_csv)
                     schedule_rows = mark_long_tail_deferred(
@@ -2511,23 +2502,22 @@ def main() -> None:
                         state_json,
                         runs_dir=runs_dir,
                         target_rounds=target_rounds,
-                        current_round_index=current_round_index,
                         phase="deferred_long_tail",
                         schedule_rows=schedule_rows,
                         registry=registry,
                     )
                     continue
 
-                launch_rows = run_prepare(current_round_index, runs_dir=runs_dir, events_log=events_log)
+                launch_rows = run_prepare(round_cursor_index, runs_dir=runs_dir, events_log=events_log)
                 if not launch_rows:
                     raise SystemExit(
-                        f"Lint failed for round {current_round_index}, but prepare-launches produced no rerun queue."
+                        f"Lint failed for round {round_cursor_index}, but prepare-launches produced no rerun queue."
                     )
                 registry, schedule_rows = handle_launch_rows(
                     launch_rows,
                     schedule_csv=schedule_csv,
                     runs_dir=runs_dir,
-                    round_index=current_round_index,
+                    round_index=round_cursor_index,
                     registry=registry,
                     codex_bin=args.codex_bin,
                     events_log=events_log,
@@ -2537,14 +2527,14 @@ def main() -> None:
 
             has_active_split = any(
                 split_state_active(load_json_dict(split_state_path_for_row(row)))
-                for row in round_rows(schedule_rows, current_round_index)
+                for row in round_rows(schedule_rows, round_cursor_index)
             )
             if has_active_split:
                 time.sleep(args.poll_seconds)
                 continue
 
             actions = run_watch(
-                current_round_index,
+                round_cursor_index,
                 runs_dir=runs_dir,
                 startup_timeout_seconds=args.startup_no_row_timeout_seconds,
                 partial_stall_timeout_seconds=args.partial_stall_timeout_seconds,
@@ -2553,13 +2543,13 @@ def main() -> None:
             if actions:
                 registry = terminate_for_actions(actions, registry, events_log)
                 save_registry(registry_json, registry)
-                launch_rows = run_prepare(current_round_index, runs_dir=runs_dir, events_log=events_log)
+                launch_rows = run_prepare(round_cursor_index, runs_dir=runs_dir, events_log=events_log)
                 if launch_rows:
                     registry, schedule_rows = handle_launch_rows(
                         launch_rows,
                         schedule_csv=schedule_csv,
                         runs_dir=runs_dir,
-                        round_index=current_round_index,
+                        round_index=round_cursor_index,
                         registry=registry,
                         codex_bin=args.codex_bin,
                         events_log=events_log,
@@ -2576,7 +2566,6 @@ def main() -> None:
         state_json,
         runs_dir=runs_dir,
         target_rounds=target_rounds,
-        current_round_index=target_rounds[-1],
         phase="completed",
         schedule_rows=schedule_rows,
         registry=registry,

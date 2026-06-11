@@ -407,7 +407,7 @@ Task:
 - For `algorithm_trading`, use the current operating-capability definition from `Plan.md` and `agent_prompt_template.md`. Verify current direct algorithmic/quantitative/systematic/HFT/automated trading capability and one-way parent inheritance from controlled subsidiaries/operating units. Reject portfolio exposure, stale/historical algorithm trading, market-maker status alone, proprietary-trading status alone, liquidity-provider language alone, "technology-driven trading firm" language alone, API/FIX/connectivity, low-latency access alone, smart order routing alone, TWAP/VWAP alone, routing/execution algorithms alone, brokerage/execution/liquidity-access evidence without explicit algorithm-trading service/agency capability, and individual founder/advisor/executive association as `algorithm_trading = yes` evidence.
 - For `market_making`, use the current operating-capability definition from `Plan.md` and `agent_prompt_template.md`. Verify current direct market-making or liquidity-provision service using the investor's own/controlled capital, one-way parent inheritance from controlled subsidiaries/operating units, official/designated market-maker or liquidity-provider roles, LP roles, and OTC principal/balance-sheet liquidity. Reject portfolio exposure, stale/historical market making, generic liquidity-provider/deep-liquidity language, liquidity access, quotes/pricing only, routing/matching/execution venue operation, exchange/broker/prime-broker status alone, proprietary-trading/HFT/quant status alone, passive fund investment, passive LP allocation, client portfolio allocation, AMM/DEX/pool operation without LP capital, protocol/token liquidity support that is not the investor's own ongoing LP/market-maker role, third-party market-maker allocations, and individual founder/advisor/executive association as `market_making = yes` evidence.
 - For `execution_services`, use the current operating-capability definition from `Plan.md` and `agent_prompt_template.md`. Verify current direct order placement, order handling, executable broker service, trade execution, matching engine, trading venue, exchange/CEX, ATS/MTF/ECN, DEX, swap, perp DEX, AMM, or on-chain trading protocol operation, plus one-way parent inheritance from controlled subsidiaries/operating units. Reject portfolio exposure, stale/historical execution, routing/smart routing alone, API/FIX/connectivity alone, liquidity access/aggregation alone, connecting to third-party liquidity/venues, white-label/embedded third-party execution, redirect-to-external-venue trading, wallet external-link trading, custody/settlement/clearing/post-trade-only services, market making alone, OTC desk alone, view-only wallet/portfolio/analytics tools, and individual founder/advisor/executive association as `execution_services = yes` evidence.
-- For `defi`, use the broad current DeFi exposure definition from `Plan.md` and `agent_prompt_template.md`. Verify both false positives and false negatives using current official sources or trusted third-party databases. Current direct operation, current official portfolio exposure, controlled venture arm, controlled investment arm, controlled fund vehicle, parent-controlled investment activity, grant, accelerator, ecosystem support, or backing can support `defi = yes`; do not apply an operating-only DeFi standard, but also reject unaffiliated affiliates, manager-only relationships, and uncontrolled funds as DeFi attribution.
+- For `defi`, use the current DeFi trading / DeFi protocol operation definition from `Plan.md` and `agent_prompt_template.md`. Verify both false positives and false negatives using current official sources or trusted third-party databases. Current DeFi protocol operation, DeFi trading, LP/yield/staking/restaking deployment, DeFi market-making/liquidity provision, on-chain arbitrage/MEV/liquidation, managed DeFi strategy, or one-way parent attribution from a controlled child can support `defi = yes`. Reject DeFi company portfolio exposure, token investment/SAFT/grants/accelerator/ecosystem support, DeFi-adjacent infrastructure exposure, CEX/broker customer DeFi access, unaffiliated affiliates, uncontrolled funds, and stale/historical DeFi activity unless the source also shows current DeFi trading/protocol-use/operation by the investor row, its managed fund vehicle, or a controlled child.
 - For `sub_fund`, use the current parent/mother-entity structure definition from `Plan.md` and `agent_prompt_template.md`. Verify that the current investor row currently owns, controls, contains, or has under it a child sub-fund, fund vehicle, venture arm, investment arm, crypto arm, dedicated capital pool, dedicated investment/trading branch, or comparable sub-fund-like structure. Reject rows that are merely fund vehicles, feeders, SPVs, protected cells, venture arms, investment arms, crypto arms, subsidiaries, brands, ordinary business units, accelerators/incubators, ecosystem programs, portfolio companies, ordinary CVC types, externally managed vehicles, generic fund managers, ordinary closed funds, name-only matches, `LastClosedFundName`/`PrimaryInvestorType` matches, specific sample-entity analogies, or stale/historical structures with no current official/trusted confirmation.
 - If you detect a systematic issue pattern, report it explicitly for the main agent using one of these cause labels when applicable: `classification`, `search`, `evidence_interpretation`, `csv_formatting`, `prompt_ambiguity`, `run_harness`, `other`.
 
@@ -470,10 +470,11 @@ def build_worker_spawn_prompt(row: dict[str, str]) -> str:
         ownership_note = "- This is a recovery attempt with a preserved prefix. Own the remaining suffix in one fresh worker and do not proactively hand off mid-batch."
     else:
         ownership_note = "- This is the normal full-batch attempt. Own the whole batch in one fresh worker and exit after this single attempt finishes."
-    return f"""Use a fresh worker subagent for exactly one part6 batch attempt. Do not reuse a finished worker context for a later attempt or a later batch. Recommended model: gpt-5.5, reasoning xhigh.
+    return f"""Use a fresh worker subagent for exactly one part6 batch attempt. Do not reuse a finished worker context for a later attempt or a later batch. Required model: gpt-5.5, reasoning xhigh.
 
 Startup requirement:
 - Read only the batch-specific instructions and inputs first.
+- Use the capability definitions in the generated instructions, `Plan.md`, and `agent_prompt_template.md` for this run. Do not rely on old results, old audit definitions, or memory from previous part6 runs.
 - Process the earliest pending investor immediately and write the first classifier/result rows early.
 - Do not begin with repo-wide file scans, `manifest.csv` sweeps, `verification_findings.csv` lookups, or broad exploration of other batches.
 - {ownership_note}
@@ -488,7 +489,7 @@ Then execute the batch and write results only to:
 
 
 def build_verifier_spawn_prompt(row: dict[str, str]) -> str:
-    return f"""Use a fresh verifier subagent for this part6 round. Recommended model: gpt-5.5, reasoning xhigh.
+    return f"""Use a fresh verifier subagent for this part6 queue group. Required model: gpt-5.5, reasoning xhigh.
 
 Read the verifier instructions:
 {row["verifier_instructions_file"]}
@@ -497,48 +498,51 @@ Then write:
 {row["verification_report_csv"]}
 {row["verification_summary_md"]}
 
-The round is not complete until every non-pass verifier row has a recorded recommended action.
+The queue group is not complete until every non-pass verifier row has a recorded recommended action.
 """
 
 
 def write_rounds_markdown(path: Path, schedule_rows: list[dict[str, str]], workers: int) -> None:
     lines = [
-        "# Part5 Worker Schedule",
+        "# Part6 Queue Worker Schedule",
         "",
-        f"- workers_per_round: {workers}",
+        f"- queue_workers: {workers}",
         f"- total_batches: {len(schedule_rows)}",
-        f"- total_rounds: {((len(schedule_rows) - 1) // workers + 1) if schedule_rows else 0}",
+        f"- queue_groups: {((len(schedule_rows) - 1) // workers + 1) if schedule_rows else 0}",
+        "- scheduler_mode: queue_only",
+        "- required_model: gpt-5.5",
+        "- required_reasoning_effort: xhigh",
         "",
-        "Default entrypoint is the blocking supervisor. It owns the fixed runtime flow `prepare -> launch -> mark-started -> watch -> lint -> next round` and should not exit until all requested rounds finish.",
+        "Default entrypoint is the queue supervisor. It owns slot filling, watch, per-batch lint/collect, tail retry, and the final completion gate. Round-mode execution is disabled.",
         "",
         "Default mode is one fresh worker per batch. Recovery may create a fresh continuation worker for the unresolved suffix, but only after a failure or explicit rerun decision.",
         "",
-        "Do not collect, merge, update checkpoint, or delete temporary run directories until the round verifier has written `verification_report.csv` and `verification_summary.md` and every non-pass row has a recorded action.",
+        "Do not collect, merge, update checkpoint, or delete temporary run directories until verifier artifacts are complete and every non-pass row has a recorded action.",
         "",
         "Preferred command:",
         "",
         "```bash",
-        f"python part6_analyse_investor_capabilities/scripts/5_run_round_supervisor.py --runs-dir {path.parent} --start-round-index <ROUND_INDEX> --round-count <ROUND_COUNT>",
+        f"python part6_analyse_investor_capabilities/scripts/5_run_queue_supervisor.py --runs-dir {path.parent} --final-dir part6_analyse_investor_capabilities/agent_runs/crypto_investor --start-round-index 1 --round-count <QUEUE_GROUP_COUNT> --max-workers {workers} --partial-stall-timeout-seconds 480",
         "```",
         "",
-        "The supervisor blocks until the requested rounds complete and lint clean. Use the manual steps below only as fallback or for debugging:",
+        "The supervisor blocks until the requested queue groups complete, all completed batches have collected, and the final completion gate passes.",
         "",
-        "Before spawning workers for a round, build the launch queue with the runtime controller. It upgrades batches into isolated attempts and chooses the right recovery mode/model for reruns:",
+        "Manual recovery helpers still use `round-index` as a queue-group identifier for legacy file naming only. Do not treat it as progress:",
         "",
         "```bash",
         f"python part6_analyse_investor_capabilities/scripts/4_manage_round_runtime.py --runs-dir {path.parent} --round-index <ROUND_INDEX> --prepare-launches",
         "```",
         "",
-        "Spawn workers from `launch_queue_round_XXXX.md`, then immediately mark that round as started:",
+        "Spawn workers from `launch_queue_round_XXXX.md`, then immediately mark that queue group as started:",
         "",
         "```bash",
         f"python part6_analyse_investor_capabilities/scripts/4_manage_round_runtime.py --runs-dir {path.parent} --round-index <ROUND_INDEX> --mark-round-started",
         "```",
         "",
-        "While the round is running, use the runtime controller instead of raw watcher commands. It detects both startup no-row failures and partial stalls and writes `runtime_actions_round_XXXX.csv` with kill+respawn recommendations:",
+        "While a queue group is running, use the runtime controller instead of raw watcher commands. It detects both startup no-row failures and partial stalls and writes `runtime_actions_round_XXXX.csv` with kill+respawn recommendations:",
         "",
         "```bash",
-        f"python part6_analyse_investor_capabilities/scripts/4_manage_round_runtime.py --runs-dir {path.parent} --round-index <ROUND_INDEX> --watch-round --startup-no-row-timeout-seconds 480 --partial-stall-timeout-seconds 240",
+        f"python part6_analyse_investor_capabilities/scripts/4_manage_round_runtime.py --runs-dir {path.parent} --round-index <ROUND_INDEX> --watch-round --startup-no-row-timeout-seconds 480 --partial-stall-timeout-seconds 480",
         "```",
         "",
         "If the runtime controller emits actions, rerun `--prepare-launches` for that same round and respawn only the affected batches or recovery attempts. Each new attempt must use a fresh worker and the previous worker should be considered closed.",
@@ -550,6 +554,13 @@ def write_rounds_markdown(path: Path, schedule_rows: list[dict[str, str]], worke
         "```",
         "",
         "If lint or the runtime controller marks any `needs_rerun` rows in `schedule.csv` or writes a rerun artifact CSV, rerun those batches with fresh workers before starting the verifier.",
+        "",
+        "Completion gate:",
+        "",
+        "```bash",
+        f"python part6_analyse_investor_capabilities/scripts/3_collect_results.py --runs-dir {path.parent} --lint-only --repair-identity-drift-in-place --fail-on-identity-drift",
+        f"python part6_analyse_investor_capabilities/scripts/10_validate_final_outputs.py --schedule-csv {path.parent / 'schedule.csv'} --final-dir part6_analyse_investor_capabilities/agent_runs/crypto_investor",
+        "```",
         "",
         "After worker results are complete, collect merged results and manual-review rows:",
         "",
