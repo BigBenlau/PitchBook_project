@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--latest-job-json", type=Path, default=DEFAULT_LATEST_JOB_JSON)
     parser.add_argument("--run-prefix", default=DEFAULT_RUN_PREFIX)
     parser.add_argument("--round-count", type=int, default=10)
-    parser.add_argument("--workers", type=int, default=5)
+    parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
         "--scheduler-mode",
         choices=["round", "queue"],

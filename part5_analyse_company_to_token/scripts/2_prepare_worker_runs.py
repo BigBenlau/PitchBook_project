@@ -20,7 +20,7 @@ DEFAULT_POLICY_PATH = RUNTIME_DIR / "policy.json"
 
 DEFAULT_BATCH_DIR = PART5_DIR / "agent_task_batches" / "crypto_company"
 DEFAULT_RUNS_DIR = PART5_DIR / "agent_runs" / "crypto_company_parallel"
-DEFAULT_WORKERS = 5
+DEFAULT_WORKERS = 8
 
 CLASSIFIER_CSV_COLUMNS = [
     "task_index",
@@ -113,7 +113,7 @@ def parse_args() -> argparse.Namespace:
         "--workers",
         type=int,
         default=DEFAULT_WORKERS,
-        help="Number of parallel workers per round. Defaults to 5.",
+        help="Number of parallel workers per round. Defaults to 8.",
     )
     parser.add_argument(
         "--start-batch",
@@ -474,7 +474,7 @@ def build_worker_spawn_prompt(row: dict[str, str]) -> str:
         ownership_note = "- This is a recovery attempt with a preserved prefix. Own the remaining suffix in one fresh worker and do not proactively hand off mid-batch."
     else:
         ownership_note = "- This is the normal full-batch attempt. Own the whole batch in one fresh worker and exit after this single attempt finishes."
-    return f"""Use a fresh worker subagent for exactly one part5 batch attempt. Do not reuse a finished worker context for a later attempt or a later batch. Recommended model: gpt-5.4-mini, reasoning medium.
+    return f"""Use a fresh worker subagent for exactly one part5 batch attempt. Do not reuse a finished worker context for a later attempt or a later batch. Recommended model: gpt-5.5, reasoning xhigh.
 
 Startup requirement:
 - Read only the batch-specific instructions and inputs first.
@@ -492,7 +492,7 @@ Then execute the batch and write results only to:
 
 
 def build_verifier_spawn_prompt(row: dict[str, str]) -> str:
-    return f"""Use a fresh verifier subagent for this part5 round. Recommended model: gpt-5.4-mini, reasoning high.
+    return f"""Use a fresh verifier subagent for this part5 round. Recommended model: gpt-5.5, reasoning xhigh.
 
 Read the verifier instructions:
 {row["verifier_instructions_file"]}

@@ -1187,6 +1187,8 @@ def validate_token_result_objects(
             ]
             if invalid_source_types:
                 errors.append(f"{column}[{index}].evidence_source_types contains invalid labels")
+        if isinstance(evidence_urls, list) and isinstance(source_types, list) and len(evidence_urls) != len(source_types):
+            errors.append(f"{column}[{index}].evidence_urls/evidence_source_types length mismatch")
     return len(parsed), errors
 
 
@@ -2406,7 +2408,7 @@ def write_checkpoint(
         "next_batch_to_process": batch_stats["next_missing_batch"],
         "next_task_index_to_process": max_task_index + 1,
         "batch_size": 30,
-        "workers": 5,
+        "workers": 8,
         "total_batches": total_batches,
         "classifier_results_csv": str(classifier_results_csv),
         "final_results_csv": str(output_csv),

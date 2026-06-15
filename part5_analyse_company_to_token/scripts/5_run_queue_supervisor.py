@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--schedule-csv", type=Path, default=None)
     parser.add_argument("--start-round-index", type=int, required=True)
     parser.add_argument("--round-count", type=int, required=True)
-    parser.add_argument("--max-workers", type=int, default=5)
+    parser.add_argument("--max-workers", type=int, default=8)
     parser.add_argument("--poll-seconds", type=int, default=ROUND.DEFAULT_POLL_SECONDS)
     parser.add_argument(
         "--batch-timeout-seconds",

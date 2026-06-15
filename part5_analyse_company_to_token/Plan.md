@@ -84,32 +84,32 @@ Scripts:
 
 Recommended batch/run parameters:
 
-- `batch_size = 30`
-- `workers = 5`
-- one operational block = 3 rounds = 15 batches = 450 companies
+- main project/token search `batch_size = 30`
+- Rule B-only overlay/backfill `batch_size = 10` micro-batch
+- `workers = 8`
+- one main operational block = 3 rounds = 24 batches = 720 companies
+- one Rule B-only operational block = 3 rounds = 24 micro-batches = 240 companies
 
 ### Model Selection Contract
 
 Default model policy:
 
-- Use `gpt-5.4-mini` for high-volume company classification.
-- Use `gpt-5.4-mini` for normal project/token search workers.
-- Keep worker research on `gpt-5.4-mini` even for 30-company batches by rotating fresh segment attempts inside the batch instead of stretching one worker context across the full batch.
-- Use `gpt-5.4-mini` for first-pass round-end verification.
-- Escalate only difficult cases to `gpt-5.4` outside the standard worker path. The default worker path remains `gpt-5.4-mini`.
-- Use `gpt-5.3-codex` for harness code, script edits, prompt-template edits, collector changes, and debugging, not for routine company/token research.
+- Use `gpt-5.5` with `xhigh` reasoning as the default for all company classification, project/token search, Rule B backfill, worker reruns, and verification.
+- Do not downshift routine worker or verifier paths to older `gpt-5.4-mini`, `gpt-5.4`, or `gpt-5.3-codex` defaults.
+- Keep main 30-company batch execution and Rule B 10-row micro-batch execution bounded by queue-mode lifecycle controls, continuation attempts, usage-limit detection, and split recovery rather than by lowering the model tier.
 
 Reasoning effort:
 
-- Classifier: `gpt-5.4-mini`, `low` or `medium`.
-- Normal project/token search: `gpt-5.4-mini`, `medium`.
-- Ambiguous project/token search: `gpt-5.4-mini`, `high`.
-- Round-end verifier: `gpt-5.4-mini`, `high`.
-- Escalation verifier: `gpt-5.4`, `high`.
-- Worker rerun with fresh segment handoff: `gpt-5.4-mini`, `high` or `xhigh`.
-- Harness engineering and code changes: `gpt-5.3-codex`, `medium` or `high` depending on complexity.
+- Classifier: `gpt-5.5`, `xhigh`.
+- Normal project/token search: `gpt-5.5`, `xhigh`.
+- Rule B company-outward backfill: `gpt-5.5`, `xhigh`.
+- Ambiguous project/token search: `gpt-5.5`, `xhigh`.
+- Round-end verifier: `gpt-5.5`, `xhigh`.
+- Escalation verifier: `gpt-5.5`, `xhigh`.
+- Worker rerun with fresh segment handoff: `gpt-5.5`, `xhigh`.
+- Harness engineering and code changes in this project: `gpt-5.5`, `xhigh`.
 
-Escalate from `gpt-5.4-mini` to `gpt-5.4` when any of these are true in verifier or manual escalation paths:
+Treat these as higher-risk cases that require stricter verifier attention, not a different default model:
 
 - verifier and worker disagree on token tickers
 - project has multiple brands, former names, foundations, DAOs, or acquired entities
@@ -118,14 +118,12 @@ Escalate from `gpt-5.4-mini` to `gpt-5.4` when any of these are true in verifier
 - skipped-search decision would exclude a company with medium or high crypto project likelihood
 - previous round produced a systematic error pattern
 
-Do not use `gpt-5.4` for every row by default. The expected workload is 17,000+ companies, so the cost-effective path is:
+The expected workload is 17,000+ companies. The default execution path is:
 
-1. broad pass with `gpt-5.4-mini`
-2. batch-internal segment rotation with fresh `gpt-5.4-mini` workers
-3. mandatory fresh verifier with `gpt-5.4-mini`
-4. targeted verifier/manual escalations with `gpt-5.4`
-
-Do not use `gpt-5.3-codex` as the default research worker unless the task includes substantial repo editing, script execution, or long-running coding-agent behavior. For token research, its coding optimization and higher output cost make it less cost-effective than `gpt-5.4-mini`.
+1. broad pass with fresh `gpt-5.5 xhigh` workers
+2. batch-internal segment rotation with fresh `gpt-5.5 xhigh` workers when lifecycle rules require it
+3. mandatory fresh verifier with `gpt-5.5 xhigh`
+4. targeted manual review for unresolved evidence, not model-tier escalation
 
 ## 3. Input Contract
 

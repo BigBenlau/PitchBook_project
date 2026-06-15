@@ -41,6 +41,8 @@ DEFAULT_SPLIT_BATCH_FAILURE_THRESHOLD = 3
 DEFAULT_CODEX_BIN = shutil.which("codex") or "codex"
 DEFAULT_SPLIT_SHARD_SIZE = 15
 DEFAULT_SPLIT_SHARD_COUNT = 2
+DEFAULT_WORKER_MODEL = "gpt-5.5"
+DEFAULT_REASONING_EFFORT = "xhigh"
 SPLIT_BATCH_LAUNCH_REASON = "split_batch_2x15"
 SPLIT_STATE_FILE_NAME = "split_recovery_state.json"
 SPLIT_OUTCOME_FILE_NAME = "search_outcome.json"
@@ -1120,7 +1122,9 @@ def spawn_worker(
         "--skip-git-repo-check",
         "--ephemeral",
         "-m",
-        launch_row.get("model") or "gpt-5.4-mini",
+        launch_row.get("model") or DEFAULT_WORKER_MODEL,
+        "-c",
+        f"model_reasoning_effort=\"{launch_row.get('reasoning_effort') or DEFAULT_REASONING_EFFORT}\"",
         "-s",
         "workspace-write",
         "--json",
@@ -1639,7 +1643,8 @@ def spawn_instruction_worker(
         "attempt_index": str(attempt_index),
         "lease_id": lease_id,
         "instructions_file": instructions_rel,
-        "model": model,
+        "model": model or DEFAULT_WORKER_MODEL,
+        "reasoning_effort": DEFAULT_REASONING_EFFORT,
     }
     entry = spawn_worker(
         launch_row,
@@ -1757,7 +1762,7 @@ def respawn_split_shard(
     entry = spawn_instruction_worker(
         instructions_file=Path(str(shard["instructions_file"])),
         final_message_path=Path(str(shard["final_message_path"])),
-        model="gpt-5.4-mini",
+        model=DEFAULT_WORKER_MODEL,
         round_index=parse_int(row.get("round_index"), 0),
         worker_slot=parse_int(row.get("worker_slot"), 0),
         batch_file=batch_file,

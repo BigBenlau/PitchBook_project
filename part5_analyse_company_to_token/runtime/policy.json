@@ -46,8 +46,8 @@
       "name": "default",
       "min_no_progress_attempts": 0,
       "any_failure_types": [],
-      "model": "gpt-5.4-mini",
-      "reasoning_effort": "medium",
+      "model": "gpt-5.5",
+      "reasoning_effort": "xhigh",
       "preferred_attempt_mode": "fresh_full_batch"
     },
     {
@@ -60,8 +60,8 @@
         "row_count_mismatch",
         "agent_unresponsive"
       ],
-      "model": "gpt-5.4-mini",
-      "reasoning_effort": "high",
+      "model": "gpt-5.5",
+      "reasoning_effort": "xhigh",
       "preferred_attempt_mode": "continue_from_prefix"
     },
     {
@@ -75,8 +75,8 @@
         "schema_error",
         "agent_unresponsive"
       ],
-      "model": "gpt-5.4-mini",
-      "reasoning_effort": "high",
+      "model": "gpt-5.5",
+      "reasoning_effort": "xhigh",
       "preferred_attempt_mode": "continue_from_prefix"
     },
     {
@@ -88,7 +88,7 @@
         "schema_error",
         "agent_unresponsive"
       ],
-      "model": "gpt-5.4-mini",
+      "model": "gpt-5.5",
       "reasoning_effort": "xhigh",
       "preferred_attempt_mode": "narrowed_suffix_only"
     }
