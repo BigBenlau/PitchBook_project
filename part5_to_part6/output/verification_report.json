@@ -1,0 +1,40 @@
+{
+  "checked_at": "2026-06-17T14:28:12.558015+00:00",
+  "status": "pass",
+  "part5_results_rows": 17837,
+  "formal_token_company_rows_from_part5": 3004,
+  "token_company_universe_rows": 3004,
+  "part6_input_rows": 10353,
+  "investor_candidate_audit_rows": 10354,
+  "unique_investor_ids": 10353,
+  "batch_size": 30,
+  "batch_count": 346,
+  "expected_batch_count": 346,
+  "batch_manifest_rows": 10353,
+  "batch_input_rows": 10353,
+  "batch_jsonl_rows": 10353,
+  "part6_reference": {
+    "enabled": true,
+    "rows": 10353,
+    "unique_investor_ids": 10353,
+    "id_set_match": true,
+    "id_order_match": true
+  },
+  "duplicate_company_ids": [],
+  "duplicate_investor_ids": [],
+  "summary_keys": [
+    "batch_size",
+    "created_at",
+    "expected_part6_batch_count",
+    "missing_investor_metadata_count",
+    "missing_investor_metadata_ids_sample",
+    "outputs",
+    "part5_results_rows",
+    "part5_token_company_count",
+    "part6_input_rows",
+    "source",
+    "unique_investor_candidates_before_metadata_filter",
+    "unique_investors_with_metadata"
+  ],
+  "errors": []
+}

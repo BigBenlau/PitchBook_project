@@ -57,9 +57,10 @@ TOKEN_COMPANY_COLUMNS = [
     "company_name",
     "normalized_domain",
     "company_type",
-    "token_ticker",
-    "token_name",
-    "token_url",
+    "token_symbols",
+    "token_names",
+    "token_urls",
+    "token_results",
     "confidence",
     "needs_manual_review",
 ]
@@ -89,9 +90,10 @@ class TokenCompany:
     company_name: str
     normalized_domain: str
     company_type: str
-    token_ticker: str
-    token_name: str
-    token_url: str
+    token_symbols: str
+    token_names: str
+    token_urls: str
+    token_results: str
     confidence: str
     needs_manual_review: str
 
@@ -176,21 +178,51 @@ def normalize_bool(value: str | None) -> bool:
     return normalize_text(value).lower() in {"yes", "true", "1", "y"}
 
 
-def parse_json_list(value: str | None) -> list[str]:
+def parse_token_results(value: str | None) -> list[dict[str, str]]:
     raw = normalize_text(value)
     if not raw or raw == "[]":
         return []
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return [raw]
-    if isinstance(parsed, list):
-        return [normalize_text(str(item)) for item in parsed if normalize_text(str(item))]
-    return [normalize_text(str(parsed))]
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid token_results JSON: {exc}: {raw[:200]}") from exc
+    if not isinstance(parsed, list):
+        raise SystemExit("token_results must be a JSON list")
+    token_objects: list[dict[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        normalized = {
+            "token_symbol": normalize_text(str(item.get("token_symbol", ""))),
+            "token_name": normalize_text(str(item.get("token_name", ""))),
+            "token_url": normalize_text(str(item.get("token_url", ""))),
+        }
+        for optional_key in ["reason", "evidence_urls", "evidence_source_types"]:
+            if optional_key in item:
+                value = item[optional_key]
+                if isinstance(value, list):
+                    normalized[optional_key] = [
+                        normalize_text(str(entry)) for entry in value if normalize_text(str(entry))
+                    ]
+                else:
+                    normalized[optional_key] = normalize_text(str(value))
+        if normalized["token_symbol"] or normalized["token_name"] or normalized["token_url"]:
+            token_objects.append(normalized)
+    return token_objects
 
 
-def has_token_signal(row: dict[str, str]) -> bool:
-    return bool(parse_json_list(row.get("token_ticker")) or parse_json_list(row.get("token_name")))
+def unique_nonempty(values: Iterable[str], limit: int = 0) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        value = normalize_text(value)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+        if limit > 0 and len(result) >= limit:
+            break
+    return result
 
 
 def derive_normalized_domain(website: str) -> str:
@@ -230,16 +262,21 @@ def load_token_companies(part5_results_csv: Path) -> dict[str, TokenCompany]:
     token_companies: dict[str, TokenCompany] = {}
     for row in iter_csv(part5_results_csv):
         company_id = normalize_text(row.get("company_id"))
-        if not company_id or not has_token_signal(row):
+        token_objects = parse_token_results(row.get("token_results"))
+        if not company_id or not token_objects:
             continue
+        token_symbols = unique_nonempty(item.get("token_symbol", "") for item in token_objects)
+        token_names = unique_nonempty(item.get("token_name", "") for item in token_objects)
+        token_urls = unique_nonempty(item.get("token_url", "") for item in token_objects)
         token_companies[company_id] = TokenCompany(
             company_id=company_id,
             company_name=normalize_text(row.get("company_name")),
             normalized_domain=normalize_text(row.get("normalized_domain")),
             company_type=normalize_text(row.get("company_type")),
-            token_ticker=json.dumps(parse_json_list(row.get("token_ticker")), ensure_ascii=False),
-            token_name=json.dumps(parse_json_list(row.get("token_name")), ensure_ascii=False),
-            token_url=json.dumps(parse_json_list(row.get("token_url")), ensure_ascii=False),
+            token_symbols=json.dumps(token_symbols, ensure_ascii=False),
+            token_names=json.dumps(token_names, ensure_ascii=False),
+            token_urls=json.dumps(token_urls, ensure_ascii=False),
+            token_results=json.dumps(token_objects, ensure_ascii=False),
             confidence=normalize_text(row.get("confidence")),
             needs_manual_review=normalize_text(row.get("needs_manual_review")),
         )
@@ -615,7 +652,7 @@ def main() -> None:
 
     token_companies = load_token_companies(part5_results_csv)
     if not token_companies:
-        raise SystemExit("No Part5 companies with non-empty token_ticker or token_name were found.")
+        raise SystemExit("No Part5 companies with non-empty token_results were found.")
 
     evidence_by_investor: dict[str, InvestorEvidence] = {}
     collect_company_investors(pitchbook_dir, token_companies, evidence_by_investor)
@@ -643,9 +680,10 @@ def main() -> None:
             "company_name": company.company_name,
             "normalized_domain": company.normalized_domain,
             "company_type": company.company_type,
-            "token_ticker": company.token_ticker,
-            "token_name": company.token_name,
-            "token_url": company.token_url,
+            "token_symbols": company.token_symbols,
+            "token_names": company.token_names,
+            "token_urls": company.token_urls,
+            "token_results": company.token_results,
             "confidence": company.confidence,
             "needs_manual_review": company.needs_manual_review,
         }
