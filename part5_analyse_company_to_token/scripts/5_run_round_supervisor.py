@@ -226,21 +226,6 @@ def normalize_row_fields(row: dict[str, Any], fieldnames: list[str]) -> dict[str
     if fieldnames == RESULT_CSV_COLUMNS:
         if not normalized.get("token_results", "").strip():
             normalized["token_results"] = "[]"
-        if not normalized.get("rule_A_token_results", "").strip():
-            normalized["rule_A_token_results"] = "[]"
-        if not normalized.get("rule_B_token_results", "").strip():
-            normalized["rule_B_token_results"] = "[]"
-        for prefix in ["rule_A", "rule_B"]:
-            include_column = f"include_{prefix}"
-            result_column = f"{prefix}_token_results"
-            reason_column = f"{prefix}_decision_reason"
-            if not normalized.get(include_column, "").strip():
-                normalized[include_column] = "pending"
-            if not normalized.get(result_column, "").strip():
-                normalized[result_column] = "[]"
-            if not normalized.get(reason_column, "").strip():
-                normalized[reason_column] = ""
-
         manual_value = normalized.get("needs_manual_review", "").strip()
         confidence_value = normalized.get("confidence", "").strip()
         if manual_value in {"low", "medium", "high"} and not confidence_value:
@@ -1393,8 +1378,6 @@ def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[s
     searched_no_token_rows = 0
     skip_candidate_rows = 0
     manual_review_rows = 0
-    rule_a_rows = 0
-    rule_b_rows = 0
     for row in rows:
         token_values = parse_json_list(row.get("token_results", ""))
         if token_values:
@@ -1406,10 +1389,6 @@ def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[s
                 skip_candidate_rows += 1
         if (row.get("needs_manual_review") or "").strip() == "yes":
             manual_review_rows += 1
-        if (row.get("include_rule_A") or "").strip() == "yes":
-            rule_a_rows += 1
-        if (row.get("include_rule_B") or "").strip() == "yes":
-            rule_b_rows += 1
     summary = {
         "task_count": task_count,
         "rows_written": len(rows),
@@ -1417,8 +1396,6 @@ def summarize_result_rows(rows: list[dict[str, str]], task_count: int) -> dict[s
         "rows_without_ticker": max(0, len(rows) - token_rows),
         "searched_no_token_rows": searched_no_token_rows,
         "skip_candidate_rows": skip_candidate_rows,
-        "rule_A_positive_rows": rule_a_rows,
-        "rule_B_positive_rows": rule_b_rows,
         "manual_review_rows": manual_review_rows,
         "search_complete": len(rows) == task_count,
     }

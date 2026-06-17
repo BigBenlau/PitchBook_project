@@ -95,7 +95,7 @@ SCHEDULE_COLUMNS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare 5-worker Codex run directories from part5 batch JSONL files.",
+        description="Prepare Codex worker run directories from part5 batch JSONL files.",
     )
     parser.add_argument(
         "--batch-dir",
@@ -391,19 +391,17 @@ Worker result files:
 {result_paths}
 
 Task:
-- Independently check whether each company's `token_results` JSON object list is correct.
-- Independently check whether each company's Rule A and Rule B outputs are correct.
+- Independently check whether each company's formal founding-entity `token_results` JSON object list is correct.
 - Read the classifier/router result for every row before judging the worker result.
 - Check whether `search_tier` was too conservative for the row.
 - Check whether any `skip_candidate` decision was unreasonable or should have been routed to `light` or `full`.
-- Detect missing fungible token mappings.
+- Detect missing founding-entity fungible token mappings.
 - Detect extra or unrelated token mappings.
 - Detect wrong company-to-project mapping.
 - Detect stock tickers, NFT-only symbols, chain names, or product codes incorrectly reported as fungible token tickers.
 - Detect `project_search_required = no` rows that should have been searched.
-- Detect Rule A over-inclusion where a company is only a foundation, BD/promotional entity, investor, token-sale/distribution participant, genesis-allocation recipient, or ordinary ecosystem participant.
-- Detect Rule B over-inclusion where a company is only a later venture arm, ecosystem fund, portfolio company, dApp, wallet, DEX, staking provider, investor, market maker, or ordinary ecosystem participant.
-- Detect missing Rule A/B token outputs when evidence shows the company directly created/co-created/led early core development or was an original founding entity.
+- Detect over-inclusion where a company is only a later venture arm, ecosystem fund, portfolio company, dApp, wallet, DEX, staking provider, investor, market maker, token-sale/distribution participant, or ordinary ecosystem participant.
+- Detect missing token outputs when evidence shows the company was an officially recognized founding entity, co-founding entity, or original founding organization of the blockchain/protocol ecosystem.
 - Focus on token-positive rows, skipped-search rows, ambiguous brands, low/medium confidence rows, and multiple-token signals.
 - If you detect a systematic issue pattern, report it explicitly for the main agent using one of these cause labels when applicable: `classification`, `search`, `evidence_interpretation`, `csv_formatting`, `prompt_ambiguity`, `run_harness`, `other`.
 
@@ -424,15 +422,9 @@ Every row in the round should appear in `verification_report.csv`. Use `verdict 
 
 Allowed verdict values:
 - pass
-- missing_original_token
-- extra_original_token
-- wrong_original_token_mapping
-- missing_rule_A_token
-- extra_rule_A_token
-- wrong_rule_A_classification
-- missing_rule_B_token
-- extra_rule_B_token
-- wrong_rule_B_classification
+- missing_token
+- extra_token
+- wrong_token_mapping
 - invalid_token_result_json
 - non_fungible_or_stock_ticker
 - search_tier_too_conservative

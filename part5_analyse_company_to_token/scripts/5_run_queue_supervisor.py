@@ -527,10 +527,10 @@ def verification_gate_state(row: dict[str, str]) -> tuple[str, str]:
             and not seen_task_indexes
             and verification_summary_is_uninitialized(summary_path)
         ):
-            # Legacy round-mode runs collected with --skip-verification and left the
-            # verifier report/summary as empty templates. Queue mode must not deadlock
-            # forever on those uninitialized artifacts.
-            return "ready_skip_verification", "legacy_uninitialized_verifier"
+            # Controlled migration/debug runs may collect with --skip-verification and
+            # leave verifier report/summary files as empty templates. Queue mode must
+            # not deadlock forever on those uninitialized artifacts.
+            return "ready_skip_verification", "uninitialized_verifier_template"
         return "pending", "missing_verifier_rows"
     return "ready", ""
 
@@ -1551,7 +1551,7 @@ def main() -> None:
             if collect_skip_verification:
                 ROUND.log_event(
                     events_log,
-                    f"[queue:collect_skip_verification] batch={batch_file} reason=legacy_uninitialized_verifier",
+                    f"[queue:collect_skip_verification] batch={batch_file} reason=uninitialized_verifier_template",
                 )
             schedule_rows = mark_batches_collecting(schedule_rows, [batch_file])
             save_schedule(schedule_csv, fieldnames, schedule_rows)

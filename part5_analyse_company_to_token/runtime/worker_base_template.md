@@ -1,8 +1,8 @@
 # Part5 Worker Run
 
-You are Worker {{WORKER_SLOT}} in round {{ROUND_INDEX}} for the part5 company-to-token review.
+You are Worker {{WORKER_SLOT}} in round {{ROUND_INDEX}} for the Part5 formal company-to-token review.
 
-This execution segment must run in a fresh worker context. Do not rely on memory from any previous batch or previous segment.
+This execution segment must run in a fresh worker context. Do not rely on memory from any previous batch or segment.
 
 You are not alone in the codebase. Do not revert or overwrite edits made by others.
 
@@ -13,8 +13,7 @@ Runtime strategy references:
 - {{RUNTIME_ARCHITECTURE}}
 - {{RUNTIME_POLICY}}
 
-The attempt runtime wrapper will provide the only authoritative write scope and output file paths. Do not invent or substitute write targets from batch-root conventions.
-The wrapper also defines any recovery boundary and lease ownership when recovery mode is active. The wrapper wins over any batch-wide assumption in the base instructions.
+The attempt runtime wrapper provides the only authoritative write scope and output paths. Do not invent or substitute write targets.
 
 Read:
 - {{PLAN_MD}}
@@ -31,66 +30,33 @@ Task range:
 - last_company: {{LAST_COMPANY}}
 
 Method:
-- Read `Plan.md` and `agent_prompt_template.md` once, then apply that workflow to each JSONL `input_row`.
-- `tasks.jsonl` carries task data and file references; it does not duplicate the full prompt text.
-- `task_index`, `company_id`, `company_name`, and `normalized_domain` are immutable identity fields. Copy them exactly from `tasks.jsonl`; never rewrite them from research findings, token pages, aliases, or live-site branding.
-- For every company, first classify company type, crypto project likelihood, search tier, project_search_required, risk flags, and classifier reason.
-- Write one classifier/router row per company to the active attempt `classifier_results.csv` path provided by the wrapper.
-- Write incrementally. Do not hold the full batch in memory and dump both CSVs only at the end.
-- As soon as you finish one company, append its classifier row and its result row to the active attempt CSVs.
-- Obey the wrapper's execution contract. In normal mode, this worker owns the whole batch for this single attempt.
-- If the wrapper marks this attempt as narrowed recovery work, obey the lease checks and any recovery row cap in that wrapper.
-- Do not invent your own handoff point. Only stop early when the wrapper explicitly defines a recovery cap, the lease changes in a narrowed recovery attempt, or you hit a real blocker.
-- The harness treats a batch that stays header-only for about 5 minutes as a startup failure and may kill/respawn the worker. A healthy worker should create its first data rows early instead of doing long upfront exploration before any CSV writes.
-- Startup discipline is mandatory:
-  - Before the first CSV write, read only the files explicitly listed in the wrapper/base instructions for this batch.
-  - Do not start with broad repository scans, cross-batch history lookups, `manifest.csv` sweeps, `verification_findings.csv` sweeps, or repo-wide file discovery commands such as `rg --files`, `find`, or broad `grep` across unrelated paths.
-  - Complete the earliest pending company first and append both its classifier row and result row before doing wider search fan-out for later companies.
-  - Keep startup lightweight: exact company/domain/alias/former-name probes for the current company are good; large parallel query bursts for many later companies are not.
-- Until at least 2 companies have been fully written in the active attempt, do not inspect prior final outputs, prior verifier findings, or unrelated batch directories unless the current company cannot be resolved without that specific lookup.
-- `company_type` must stay inside the allowed enum from `Plan.md`; do not invent finer-grained labels.
-- Use `search_tier = full`, `light`, or `skip_candidate` according to `Plan.md`.
-- Use `project_search_required = yes` for `full` and `light`; use `no` only for `skip_candidate`.
-- Crypto-native infrastructure rows with clear protocol/product context, such as MEV, validator, relayer, builder, rollup, node, or chain infra products, must not use `skip_candidate`; use at least `light`.
-- If `search_tier = skip_candidate`, write one completed result row with `token_results = []`, `include_rule_A = no`, `include_rule_B = no`, and clear decision reasons derived from `classifier_reason`.
-- If `search_tier = light`, run a bounded token-existence check.
-- If `search_tier = full`, search freely to identify company -> project -> fungible token ticker mapping.
-- If light search finds a plausible token or project signal, upgrade to full search in the same run.
-- Before finalizing any `skip_candidate` or searched no-token row, run a mandatory former-name / alias / rebrand continuity pass. If former-name or rebrand material points to a tokenized project, do not close the row as skipped/no-token until that lineage is resolved.
-- For protocol, rewards, governance, staking, wrapper, liquid-staked, bridge, or tokenomics language, run a mandatory token-family sweep before closing the row. Do not stop at the first ticker if current docs imply multiple fungible tokens.
-- If a token is supported only by secondary token pages, market aggregators, or other non-primary sources, run one extra company/project linkage pass. If the token still remains secondary-only, do not output it as a clean high-confidence row; either keep `token_results = []` or keep the token with `needs_manual_review = yes`.
-- Prefer official and primary sources, but do not limit research to official website, CoinGecko, or CoinMarketCap.
-- Return exactly one CSV row per company.
-- If no supported token is found, set `token_results` to `[]` and write a clear `token_decision_reason`.
-- If multiple tokens are found, keep one row and put all mappings in `token_results` as a JSON object list.
+- Read `Plan.md` and `agent_prompt_template.md` once, then process each JSONL `input_row`.
+- `task_index`, `company_id`, `company_name`, and `normalized_domain` are immutable. Copy them exactly from `tasks.jsonl`.
+- Classify company type, crypto project likelihood, search tier, project_search_required, risk flags, and classifier reason.
+- Write one classifier row per company to the active attempt `classifier_results.csv`.
+- Write one formal result row per company to the active attempt `results.csv`.
+- Append rows incrementally as soon as each company is completed.
+- Do not start with broad repository scans, cross-batch history lookups, manifest sweeps, or unrelated batch exploration.
+- Complete the earliest pending company first and append both rows before wider fan-out.
+- Obey narrowed recovery caps and lease checks if the wrapper defines them.
+
+Formal token rule:
+- Include a token only when strong, direct, stable evidence shows that the company is an officially recognized founding entity, co-founding entity, or original founding organization of the token's blockchain/protocol ecosystem.
+- Exclude ordinary dApps, wallets, exchanges, DEXs, staking providers, validators without founding evidence, investors, launchpads, incubators, market makers, later ecosystem funds, portfolio companies, and ordinary ecosystem participants.
+- If multiple tokens qualify, keep one row and put all mappings in `token_results`.
+- If no token qualifies, set `token_results = []` and write a clear `token_decision_reason`.
+- Before closing a no-token row, run a bounded exact-domain, alias, former-name, and token-family probe when relevant.
+
+Evidence requirements:
+- Prefer official and primary sources.
+- Secondary sources may corroborate but should not replace direct founding-entity evidence for high-confidence inclusion.
 - Each token result object must include `token_symbol`, `token_name`, `token_url`, `reason`, `evidence_urls`, and `evidence_source_types`.
-- Also use JSON-list strings for `project_name` and `project_url`.
-- After the original company-to-token mapping, evaluate Rule A and Rule B from the company outward.
-- Rule A is stricter: include a token only when the company directly created, co-created, led early core technical development, or was the official core engineering company responsible for launching the token's blockchain/protocol/token system.
-- Rule B includes officially recognized founding entities, co-founding entities, or original founding organizations of a blockchain/protocol ecosystem, even when they are not direct protocol creators.
-- Do not use foundation governance, branding, ecosystem promotion, business development, commercial adoption, token sale, genesis allocation, investment, holding, wallet, DEX, staking, market-making, or ordinary ecosystem participation as Rule A evidence.
-- Do not use later venture arms, later ecosystem funds, portfolio companies, ordinary dApps, wallets, DEXs, staking providers, incubators, investors, or market makers as Rule B evidence.
-- Write `include_rule_A` and `include_rule_B` as `yes` or `no` after completing the Rule A/B search. Use `pending` only for legacy schema backfill rows that have not yet been evaluated.
-- Use JSON object-list strings for `rule_A_token_results` and `rule_B_token_results`.
-- Each Rule A/B token result object must include `token_symbol`, `token_name`, `token_url`, `reason`, `evidence_urls`, and `evidence_source_types`.
-- Write `rule_A_decision_reason` and `rule_B_decision_reason` for no-token or low-confidence decisions.
-- `has_token_evidence` must never be blank. For searched rows, write a concise evidence summary, not bare `yes` or `no`.
-- For searched no-token rows, make `has_token_evidence` explicit that a best-effort search found no supported fungible token ticker for the company/project lineage you checked.
-- For searched rows, `evidence_urls` and `evidence_source_types` must both be non-empty.
-- `evidence_urls` must use `|`-separated absolute HTTP(S) URLs.
-- `evidence_source_types` must use `|`-separated lowercase source labels such as `official_site`, `official_docs`, `coingecko`, `coinmarketcap`, `explorer`, or `secondary_source`.
-- Do not use stock ticker, NFT-only symbol, chain name, or product code as a fungible token ticker unless the evidence clearly supports it.
-- Before setting `needs_manual_review = yes`, run one extra resolution pass using current official sources, aliases/former names, and exact token data pages.
-- Do not use `needs_manual_review = yes` as a substitute for completing searchable disambiguation.
-- A no-token row may still be `needs_manual_review = no` when full search plus the resolution pass finds no remaining plausible company-owned fungible token.
-- Before finalizing output files, cross-check every row against `tasks.jsonl` to ensure row order and immutable identity fields still exactly match the assigned task list.
-- Do not invent schema changes, prompt changes, or ad hoc output formats inside the worker run.
-- Before finalizing output files, self-check every row for schema discipline:
-  - `risk_flags` in the active attempt classifier CSV must be a JSON list string, not `none` or pipe-separated text.
-  - `confidence` in the active attempt results CSV must be exactly `high`, `medium`, or `low`.
-  - list fields must stay valid JSON lists.
-- If you hit a blocker, ambiguity pattern, or systematic issue, report it back to the main agent instead of silently working around it.
-- Classify any reported issue using one of these cause labels when applicable: `classification`, `search`, `evidence_interpretation`, `csv_formatting`, `prompt_ambiguity`, `run_harness`, `other`.
+- `project_name`, `project_url`, and `token_results` must be JSON-list strings.
+- `has_token_evidence` must summarize evidence, not bare `yes` or `no`.
+- `evidence_urls` must be `|`-separated HTTP(S) URLs.
+- `evidence_source_types` must be `|`-separated lowercase labels.
+- `confidence` must be exactly `high`, `medium`, or `low`.
+- `needs_manual_review` must be exactly `yes` or `no`.
 
 Classifier CSV header:
 {{CLASSIFIER_CSV_HEADER}}
@@ -105,8 +71,6 @@ Final response should report:
 - rows with `token_results = []`
 - rows with `project_search_required = yes` and `token_results = []`
 - rows with `project_search_required = no` and `token_results = []`
-- rows with `include_rule_A = yes`
-- rows with `include_rule_B = yes`
 - rows by `search_tier`
 - `needs_manual_review = yes` count
 - authoritative classifier file path

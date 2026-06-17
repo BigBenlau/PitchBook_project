@@ -13,13 +13,9 @@ from typing import Any
 from part5_schedule_io import write_schedule_csv
 from result_schema import (
     JSON_LIST_COLUMNS,
-    LEGACY_RESULT_CSV_COLUMNS_NO_RULES,
-    LEGACY_RESULT_CSV_COLUMNS_WITH_RULES,
-    LEGACY_VERIFICATION_CSV_COLUMNS,
     RESULT_CSV_COLUMNS,
     TOKEN_RESULT_COLUMNS,
     VERIFICATION_CSV_COLUMNS,
-    migrate_legacy_result_row,
 )
 
 
@@ -73,22 +69,15 @@ ALLOWED_COMPANY_TYPES = {
 
 ALLOWED_LIKELIHOODS = {"high", "medium", "low", "none", "unclear"}
 ALLOWED_YES_NO = {"yes", "no"}
-ALLOWED_RULE_INCLUDE = {"yes", "no", "pending"}
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 ALLOWED_SEARCH_TIERS = {"full", "light", "skip_candidate"}
 SOURCE_TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
 
 ALLOWED_VERDICTS = {
     "pass",
-    "missing_original_token",
-    "extra_original_token",
-    "wrong_original_token_mapping",
-    "missing_rule_A_token",
-    "extra_rule_A_token",
-    "wrong_rule_A_classification",
-    "missing_rule_B_token",
-    "extra_rule_B_token",
-    "wrong_rule_B_classification",
+    "missing_token",
+    "extra_token",
+    "wrong_token_mapping",
     "invalid_token_result_json",
     "suspected_missing_token",
     "suspected_extra_token",
@@ -148,7 +137,7 @@ def canonicalize_runtime_failure_reasons(reason: str) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect v2 part5 worker result CSVs, enforce verifier gates, and update final outputs.",
+        description="Collect part5 formal-rule worker result CSVs, enforce verifier gates, and update final outputs.",
     )
     parser.add_argument(
         "--runs-dir",
@@ -205,12 +194,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-verification",
         action="store_true",
-        help="Skip mandatory verifier checks. Intended only for legacy/debug runs.",
+        help="Skip mandatory verifier checks. Intended only for debug or controlled migration runs.",
     )
     parser.add_argument(
         "--replace-output",
         action="store_true",
-        help="Replace existing final results instead of appending to a v2 final CSV.",
+        help="Replace existing final results instead of appending to the final CSV.",
     )
     parser.add_argument(
         "--cleanup-run-artifacts",
@@ -1095,7 +1084,7 @@ def repair_shifted_result_row(row: dict[str, str]) -> dict[str, str]:
     for column in LIST_COLUMNS:
         repaired[column] = normalize_json_list_string(repaired.get(column, ""))
 
-    return normalize_rule_decision_fields(repaired)
+    return normalize_token_decision_fields(repaired)
 
 
 def normalize_result_row_payload(payload: dict) -> dict[str, str]:
@@ -1112,23 +1101,15 @@ def normalize_result_row_payload(payload: dict) -> dict[str, str]:
             normalized[column] = normalize_json_list_string(value)
         else:
             normalized[column] = str(value)
-    return normalize_rule_decision_fields(normalized)
+    return normalize_token_decision_fields(normalized)
 
 
-def normalize_rule_decision_fields(row: dict[str, str]) -> dict[str, str]:
+def normalize_token_decision_fields(row: dict[str, str]) -> dict[str, str]:
     normalized = dict(row)
     for column in TOKEN_RESULT_COLUMNS:
         normalized[column] = normalize_json_list_string(normalized.get(column, ""))
         if not normalized[column]:
             normalized[column] = "[]"
-    for rule in ["A", "B"]:
-        include_column = f"include_rule_{rule}"
-        result_column = f"rule_{rule}_token_results"
-        reason_column = f"rule_{rule}_decision_reason"
-        if not (normalized.get(include_column) or "").strip():
-            normalized[include_column] = "pending"
-        normalized[result_column] = normalize_json_list_string(normalized.get(result_column, ""))
-        normalized[reason_column] = (normalized.get(reason_column) or "").strip()
     return normalized
 
 
@@ -1248,29 +1229,6 @@ def validate_result_row(row: dict[str, str], source: Path) -> list[str]:
     errors.extend(token_result_errors)
     if token_count == 0 and not (row.get("token_decision_reason") or "").strip():
         errors.append("token_results=[] requires token_decision_reason")
-    for rule in ["A", "B"]:
-        include_value = (row.get(f"include_rule_{rule}") or "").strip()
-        result_column = f"rule_{rule}_token_results"
-        reason_column = f"rule_{rule}_decision_reason"
-        rule_token_count, rule_errors = validate_token_result_objects(
-            row.get(result_column, ""),
-            result_column,
-            require_positive_fields=include_value == "yes",
-        )
-        errors.extend(rule_errors)
-        if include_value not in ALLOWED_RULE_INCLUDE:
-            errors.append(f"include_rule_{rule} must be yes, no, or pending")
-        if include_value == "yes":
-            if rule_token_count == 0:
-                errors.append(f"include_rule_{rule}=yes requires {result_column}")
-        elif include_value == "no":
-            if rule_token_count > 0:
-                errors.append(f"include_rule_{rule}=no requires empty {result_column}")
-            if not (row.get(reason_column) or "").strip():
-                errors.append(f"include_rule_{rule}=no requires {reason_column}")
-        elif include_value == "pending":
-            if rule_token_count > 0:
-                errors.append(f"include_rule_{rule}=pending requires empty {result_column}")
     if row.get("project_search_required") == "no" and not (row.get("project_search_reason") or "").strip():
         errors.append("project_search_required=no requires project_search_reason")
     has_token_evidence = (row.get("has_token_evidence") or "").strip()
@@ -1448,7 +1406,7 @@ def canonicalize_result_row(row: dict[str, str]) -> dict[str, str]:
     normalized["confidence"] = normalize_confidence_value(normalized.get("confidence", ""))
     for column in LIST_COLUMNS:
         normalized[column] = normalize_json_list_string(normalized.get(column, ""))
-    normalized = normalize_rule_decision_fields(normalized)
+    normalized = normalize_token_decision_fields(normalized)
     normalized = repair_shifted_result_row(normalized)
     normalized["confidence"] = normalize_confidence_value(normalized.get("confidence", ""))
     return normalized
@@ -1506,11 +1464,6 @@ def collect_worker_rows(
                 duplicate_task_indexes.add(task_index)
             seen_task_indexes.add(task_index)
             validation_errors.extend(validate_result_row(row, results_csv))
-            for rule in ["A", "B"]:
-                if (row.get(f"include_rule_{rule}") or "").strip() == "pending":
-                    validation_errors.append(
-                        f"{results_csv}: task_index={task_index}: fresh worker rows cannot use include_rule_{rule}=pending"
-                    )
             if requires_search_guarantee(schedule_row) and row.get("project_search_required") != "yes":
                 validation_errors.append(
                     f"{results_csv}: task_index={task_index}: search-guarantee rerun batches require project_search_required=yes"
@@ -1655,8 +1608,6 @@ def collect_verification_rows(
                         )
                     verifier_result_checks = [
                         ("verifier_token_results", "token_results"),
-                        ("verifier_rule_A_token_results", "rule_A_token_results"),
-                        ("verifier_rule_B_token_results", "rule_B_token_results"),
                     ]
                     for verifier_column, result_column in verifier_result_checks:
                         verifier_value = normalize_json_list_string(row.get(verifier_column, ""))
@@ -1763,16 +1714,10 @@ def load_existing_results(path: Path, replace_output: bool) -> list[dict[str, st
     header, rows = load_csv(path)
     if header == RESULT_CSV_COLUMNS:
         return [{column: row.get(column, "") for column in RESULT_CSV_COLUMNS} for row in rows]
-    if tuple(header) in {
-        tuple(LEGACY_RESULT_CSV_COLUMNS_WITH_RULES),
-        tuple(LEGACY_RESULT_CSV_COLUMNS_NO_RULES),
-    }:
-        return [normalize_result_row_payload(migrate_legacy_result_row(row)) for row in rows]
-    if header != RESULT_CSV_COLUMNS:
-        raise SystemExit(
-            f"Existing output CSV is not current or supported legacy schema: {path}. "
-            "Use --replace-output or write to a different --output-csv."
-        )
+    raise SystemExit(
+        f"Existing output CSV is not current schema: {path}. "
+        "Use --replace-output or write to a different --output-csv."
+    )
 
 
 def load_existing_classifier_results(path: Path, replace_output: bool) -> list[dict[str, str]]:
@@ -2396,7 +2341,7 @@ def write_checkpoint(
 
     checkpoint = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "schema_version": "v2",
+        "schema_version": "formal_founding_entity_v1",
         "completed_rows_in_final_results": len(final_rows),
         "completed_through_task_index": max_task_index,
         "completed_through_batch": batch_stats["contiguous_completed_through_batch"],
