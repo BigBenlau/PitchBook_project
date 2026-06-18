@@ -6,18 +6,17 @@ from pathlib import Path
 from typing import Any
 
 
-VERIFICATION_MODE_NONE = "none"
 VERIFICATION_MODE_REQUIRED = "required"
 DEFAULT_VERIFICATION_MODE = VERIFICATION_MODE_REQUIRED
 VERIFICATION_MODE_VALUES = {
-    VERIFICATION_MODE_NONE,
     VERIFICATION_MODE_REQUIRED,
 }
 LEGACY_VERIFICATION_MODE_ALIASES = {
     "": DEFAULT_VERIFICATION_MODE,
-    "disabled": VERIFICATION_MODE_NONE,
-    "skip": VERIFICATION_MODE_NONE,
-    "template_only": VERIFICATION_MODE_NONE,
+    "none": DEFAULT_VERIFICATION_MODE,
+    "disabled": DEFAULT_VERIFICATION_MODE,
+    "skip": DEFAULT_VERIFICATION_MODE,
+    "template_only": DEFAULT_VERIFICATION_MODE,
 }
 SEARCH_REQUIREMENT_UNKNOWN = "unknown"
 SEARCH_REQUIREMENT_SKIP_ONLY = "skip_only"
@@ -90,7 +89,7 @@ def resolve_effective_verification_mode(
     if search_requirement == SEARCH_REQUIREMENT_SEARCHED:
         return VERIFICATION_MODE_REQUIRED, "searched_data_requires_verification"
     if search_requirement == SEARCH_REQUIREMENT_SKIP_ONLY:
-        return VERIFICATION_MODE_NONE, "skip_candidate_only_batch"
+        return VERIFICATION_MODE_REQUIRED, "skip_candidate_only_still_requires_verification"
     return VERIFICATION_MODE_REQUIRED, "verification_unknown_defaults_required"
 
 

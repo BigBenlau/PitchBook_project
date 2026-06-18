@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from part6_runtime_contract import (
-    VERIFICATION_MODE_NONE,
     VERIFICATION_MODE_REQUIRED,
     resolve_effective_verification_mode,
 )
@@ -62,11 +61,10 @@ def canonicalize_schedule(schedule_csv: Path, *, dry_run: bool) -> tuple[bool, d
     raw_fieldnames, _ = load_csv_rows_with_fields(schedule_csv)
     fieldnames, rows = load_schedule_csv_with_fields(schedule_csv)
     if not rows:
-        return False, {"rows": 0, "required": 0, "none": 0}
+        return False, {"rows": 0, "required": 0}
 
     changed = raw_fieldnames != fieldnames
     required_count = 0
-    none_count = 0
     normalized_rows: list[dict[str, str]] = []
     for row in rows:
         updated = dict(row)
@@ -76,13 +74,11 @@ def canonicalize_schedule(schedule_csv: Path, *, dry_run: bool) -> tuple[bool, d
             changed = True
         if mode == VERIFICATION_MODE_REQUIRED:
             required_count += 1
-        elif mode == VERIFICATION_MODE_NONE:
-            none_count += 1
         normalized_rows.append(updated)
 
     if changed and not dry_run:
         write_schedule_csv(schedule_csv, normalized_rows, fieldnames=fieldnames)
-    return changed, {"rows": len(rows), "required": required_count, "none": none_count}
+    return changed, {"rows": len(rows), "required": required_count}
 
 
 def schedule_summary(schedule_csv: Path) -> dict[str, Any]:
@@ -98,7 +94,7 @@ def schedule_summary(schedule_csv: Path) -> dict[str, Any]:
 
     first_row = rows[0]
     last_row = rows[-1]
-    overall_mode = VERIFICATION_MODE_NONE
+    overall_mode = VERIFICATION_MODE_REQUIRED
     for row in rows:
         mode, _ = effective_mode_for_row(row)
         if mode == VERIFICATION_MODE_REQUIRED:
@@ -164,7 +160,7 @@ def main() -> None:
         if changed:
             migrated_schedules.append(str(schedule_csv))
         schedule_reports.append(
-            f"{schedule_csv}: rows={counts['rows']} required={counts['required']} none={counts['none']} changed={changed}"
+            f"{schedule_csv}: rows={counts['rows']} required={counts['required']} changed={changed}"
         )
 
     migrated_launchers: list[str] = []

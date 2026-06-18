@@ -322,6 +322,7 @@ def render_worker_base_instructions(
             "- Every investor in this batch must use `search_tier = full` and `capability_search_required = yes`.\n"
             "- Do not use `search_tier = skip_candidate` or `search_tier = light` for any row in this rerun batch.\n"
             "- A no-capability conclusion is allowed only after full current-source search with non-empty absolute HTTP(S) `evidence_urls` and valid `evidence_source_types`.\n"
+            "- If no reliable current official/trusted source exists after real search, keep all capabilities `no`, set `confidence = low`, `needs_manual_review = yes`, leave evidence fields blank, and add `identity_unresolved` or `no_reliable_external_match` to `other_flags`.\n"
             "- Copy `task_index`, `investor_id`, `investor_name`, `normalized_domain`, and `primary_investor_type` exactly from `tasks.jsonl`.\n"
         )
     elif any("rerun_manual_fallbacks" in marker for marker in search_guarantee_markers):
@@ -331,6 +332,7 @@ def render_worker_base_instructions(
             "- This rerun window exists to guarantee actual search coverage. Do not use `search_tier = skip_candidate` in this rerun batch.\n"
             "- Every investor in this batch must receive at least `light` search, so `capability_search_required` must be `yes` for every investor.\n"
             "- A no-capability conclusion is allowed only after real search using current official/exact-match sources, with non-empty `evidence_urls` and `evidence_source_types`.\n"
+            "- If no reliable current official/trusted source exists after real search, keep all capabilities `no`, set `confidence = low`, `needs_manual_review = yes`, leave evidence fields blank, and add `identity_unresolved` or `no_reliable_external_match` to `other_flags`.\n"
             "- Do not close a row as no-capability only from investor-type heuristics; perform the bounded or full search first, then conclude `capability_labels = []` if appropriate.\n"
         )
     return rendered
@@ -435,6 +437,12 @@ Allowed verdict values:
 - search_should_not_have_been_skipped
 - insufficient_evidence
 
+Hard schema rule: do not use any other verdict token. In particular, `fail`,
+`failed`, `error`, `needs_fix`, and free-text verdicts are invalid and will
+stop collection at the verifier gate. If the worker row needs an edit, choose
+the closest allowed non-pass verdict above and set `recommended_action =
+edit_row`.
+
 Allowed recommended_action values:
 - accept_worker_row
 - edit_row
@@ -447,6 +455,11 @@ Authoritative correction rule:
 - If `recommended_action = edit_row`, fill `corrected_result_row_json` with a full JSON object using the exact result-row schema.
 - The corrected JSON must contain all result columns, not only the edited fields.
 - The collector will apply that corrected row directly if it passes validation.
+- If a searched worker row found no reliable current official/trusted source
+  and all capabilities are `no`, do not use `rerun_investor` just because
+  evidence fields are blank. Use `mark_manual_review` or `edit_row` so the row
+  has `confidence = low`, `needs_manual_review = yes`, and an `other_flags`
+  marker such as `identity_unresolved` or `no_reliable_external_match`.
 
 `verification_summary.md` must include:
 - checked row count

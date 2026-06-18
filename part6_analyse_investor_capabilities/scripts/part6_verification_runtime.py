@@ -5,7 +5,7 @@ import csv
 from pathlib import Path
 from typing import Any, Callable
 
-from part6_runtime_contract import VERIFICATION_MODE_NONE, resolve_effective_verification_mode
+from part6_schema import ALLOWED_VERDICTS, ALLOWED_VERIFICATION_ACTIONS
 
 
 def verification_summary_is_uninitialized(summary_path: Path) -> bool:
@@ -22,15 +22,6 @@ def verification_gate_state(
     resolve_repo_path: Callable[[str], Path],
     load_jsonl_tasks: Callable[[Path], list[dict[str, Any]]],
 ) -> tuple[str, str]:
-    classifier_raw = str(row.get("classifier_results_csv") or "").strip()
-    classifier_path = resolve_repo_path(classifier_raw) if classifier_raw else None
-    verification_mode, mode_reason = resolve_effective_verification_mode(
-        row.get("verification_mode"),
-        classifier_csv=classifier_path,
-    )
-    if verification_mode == VERIFICATION_MODE_NONE:
-        return "ready_skip_verification", mode_reason
-
     report_raw = str(row.get("verification_report_csv") or "").strip()
     summary_raw = str(row.get("verification_summary_md") or "").strip()
     if not report_raw or not summary_raw:
@@ -61,6 +52,10 @@ def verification_gate_state(
                 seen_task_indexes.add(task_index)
                 verdict = str(report_row.get("verdict") or "").strip()
                 recommended_action = str(report_row.get("recommended_action") or "").strip()
+                if verdict not in ALLOWED_VERDICTS:
+                    return "pending", "invalid_verifier_verdict"
+                if recommended_action not in ALLOWED_VERIFICATION_ACTIONS:
+                    return "pending", "invalid_verifier_action"
                 if verdict and verdict != "pass" and not recommended_action:
                     return "pending", "non_pass_without_action"
                 if recommended_action in {"rerun_batch", "rerun_investor"}:
@@ -87,20 +82,10 @@ def round_verification_gate_state(
 ) -> dict[str, Any]:
     rerun_batch_files: list[str] = []
     pending_reasons: list[str] = []
-    saw_required_rows = False
     saw_ready_rows = False
 
     for row in rows:
         batch_file = str(row.get("batch_file") or "").strip()
-        classifier_raw = str(row.get("classifier_results_csv") or "").strip()
-        classifier_path = resolve_repo_path(classifier_raw) if classifier_raw else None
-        verification_mode, _ = resolve_effective_verification_mode(
-            row.get("verification_mode"),
-            classifier_csv=classifier_path,
-        )
-        if verification_mode != VERIFICATION_MODE_NONE:
-            saw_required_rows = True
-
         gate_state, gate_reason = verification_gate_state(
             row,
             resolve_repo_path=resolve_repo_path,
@@ -113,7 +98,7 @@ def round_verification_gate_state(
         if gate_state == "pending" and gate_reason:
             pending_reasons.append(gate_reason)
             continue
-        if gate_state in {"ready", "ready_skip_verification"}:
+        if gate_state == "ready":
             saw_ready_rows = True
 
     if rerun_batch_files:
@@ -128,14 +113,14 @@ def round_verification_gate_state(
             "reason": pending_reasons[0],
             "batch_files": [],
         }
-    if saw_required_rows or saw_ready_rows:
+    if saw_ready_rows:
         return {
             "state": "ready",
             "reason": "",
             "batch_files": [],
         }
     return {
-        "state": "ready_skip_verification",
-        "reason": "skip_candidate_only_batch",
+        "state": "pending",
+        "reason": "missing_verifier_rows",
         "batch_files": [],
     }

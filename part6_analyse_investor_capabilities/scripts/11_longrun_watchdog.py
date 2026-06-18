@@ -5,6 +5,7 @@ import argparse
 import csv
 import fcntl
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -20,7 +21,8 @@ REPO_ROOT = PART6_DIR.parent
 
 DEFAULT_RUNS_DIR = PART6_DIR / "agent_runs" / "crypto_investor"
 DEFAULT_LATEST_JOB_JSON = PART6_DIR / "agent_runs" / "crypto_investor_longrun_latest.json"
-DEFAULT_EXPECTED_ROW_COUNT = 13970
+DEFAULT_BATCH_DIR = REPO_ROOT / "part5_to_part6" / "output" / "part6_batches"
+DEFAULT_EXPECTED_ROW_COUNT = 10353
 DEFAULT_HEARTBEAT_GRACE_SECONDS = 1800
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_POLL_SECONDS = 30
@@ -41,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     parser.add_argument("--latest-job-json", type=Path, default=DEFAULT_LATEST_JOB_JSON)
+    parser.add_argument("--batch-dir", type=Path, default=DEFAULT_BATCH_DIR)
     parser.add_argument("--expected-row-count", type=int, default=DEFAULT_EXPECTED_ROW_COUNT)
     parser.add_argument("--heartbeat-grace-seconds", type=int, default=DEFAULT_HEARTBEAT_GRACE_SECONDS)
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
@@ -172,7 +175,14 @@ def run_status(latest_job_json: Path, heartbeat_grace_seconds: int) -> tuple[dic
         return None, f"status_json_decode_failed error={exc}"
 
 
-def max_round_index(schedule_csv: Path) -> int:
+def batch_count_for_metadata(schedule_csv: Path, batch_dir: Path) -> int:
+    rows = read_csv_rows(schedule_csv)
+    if rows:
+        return len(rows)
+    return len(sorted(batch_dir.glob("batch_*.jsonl"))) if batch_dir.exists() else 0
+
+
+def max_round_index(schedule_csv: Path, *, max_workers: int, batch_count: int) -> int:
     rows = read_csv_rows(schedule_csv)
     values: list[int] = []
     for row in rows:
@@ -180,7 +190,11 @@ def max_round_index(schedule_csv: Path) -> int:
             values.append(int(str(row.get("round_index") or "0")))
         except ValueError:
             pass
-    return max(values) if values else 59
+    if values:
+        return max(values)
+    if batch_count > 0 and max_workers > 0:
+        return math.ceil(batch_count / max_workers)
+    return 1
 
 
 def build_supervisor_command(
@@ -347,6 +361,7 @@ def update_latest_job(
     expected_count: int,
     max_workers: int,
     round_count: int,
+    batch_count: int,
 ) -> None:
     payload = load_json(latest_job_json) or {}
     payload.update(
@@ -360,10 +375,10 @@ def update_latest_job(
             "final_dir": str(runs_dir.resolve()),
             "final_results_csv": str((runs_dir / "results.csv").resolve()),
             "start_batch": 1,
-            "end_batch": 466,
+            "end_batch": batch_count,
             "first_task_index": 1,
             "last_task_index": expected_count,
-            "batch_count": 466,
+            "batch_count": batch_count,
             "workers": max_workers,
             "scheduler_mode": "queue",
             "round_count_actual": round_count,
@@ -381,6 +396,7 @@ def main() -> None:
     args = parse_args()
     runs_dir = args.runs_dir.resolve()
     latest_job_json = args.latest_job_json.resolve()
+    batch_dir = args.batch_dir.resolve()
     log_path = args.log.resolve()
     restart_stdout_log = args.restart_stdout_log.resolve()
 
@@ -397,7 +413,12 @@ def main() -> None:
             log_line(log_path, f"complete=false {complete_reason}; healthy {reason}; no_restart")
             return
 
-        round_count = max_round_index(runs_dir / "schedule.csv")
+        batch_count = batch_count_for_metadata(runs_dir / "schedule.csv", batch_dir)
+        round_count = max_round_index(
+            runs_dir / "schedule.csv",
+            max_workers=args.max_workers,
+            batch_count=batch_count,
+        )
         command = build_supervisor_command(
             runs_dir=runs_dir,
             round_count=round_count,
@@ -449,6 +470,7 @@ def main() -> None:
             expected_count=args.expected_row_count,
             max_workers=args.max_workers,
             round_count=round_count,
+            batch_count=batch_count,
         )
     finally:
         lock_handle.close()

@@ -11,6 +11,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from part6_schema import ALLOWED_VERDICTS, ALLOWED_VERIFICATION_ACTIONS
 from part6_schedule_io import write_schedule_csv
 
 
@@ -34,6 +35,7 @@ RUNNING_PHASES = {
     "watch",
     "fill_slots",
     "collect",
+    "waiting_for_verifier",
     "split_recovery",
     "deferred_long_tail",
     "tail_retry_pending",
@@ -219,19 +221,42 @@ def row_has_live_registry_entry(row: dict[str, str], registry: list[dict[str, An
             continue
         if ROUND.parse_int(entry.get("attempt_index"), 0) != attempt_index:
             continue
-        if ROUND.process_alive(ROUND.parse_int(entry.get("pid"), 0)):
+        if ROUND.registry_entry_alive(entry):
             return True
     return False
 
 
-def row_has_active_split(row: dict[str, str]) -> bool:
-    return ROUND.split_state_active(ROUND.load_json_dict(ROUND.split_state_path_for_row(row)))
+def row_has_live_split_registry_entry(row: dict[str, str], registry: list[dict[str, Any]]) -> bool:
+    batch_file = str(row.get("batch_file") or "")
+    attempt_index = ROUND.parse_int(row.get("attempt_index"), 0)
+    for entry in registry:
+        if str(entry.get("batch_file") or "") != batch_file:
+            continue
+        if ROUND.parse_int(entry.get("attempt_index"), 0) != attempt_index:
+            continue
+        if not str(entry.get("split_shard_id") or "").strip():
+            continue
+        if ROUND.registry_entry_alive(entry):
+            return True
+    return False
+
+
+def row_has_active_split(row: dict[str, str], registry: list[dict[str, Any]] | None = None) -> bool:
+    split_state = ROUND.load_json_dict(ROUND.split_state_path_for_row(row))
+    if not ROUND.split_state_active(split_state):
+        return False
+    if registry is None:
+        return True
+    # Split state can remain "running" after all shard processes have exited.
+    # Only live shard PIDs should occupy worker slots; manage_split_recoveries()
+    # handles respawn/parking for the stale split state on the next loop.
+    return row_has_live_split_registry_entry(row, registry)
 
 
 def row_is_actively_running(row: dict[str, str], registry: list[dict[str, Any]]) -> bool:
     if effective_status(row) != "running":
         return False
-    return row_has_live_registry_entry(row, registry) or row_has_active_split(row)
+    return row_has_live_registry_entry(row, registry) or row_has_active_split(row, registry)
 
 
 def normalize_queue_rows(
@@ -249,7 +274,7 @@ def normalize_queue_rows(
         current_attempt_index = ROUND.parse_int(updated.get("attempt_index"), 0)
         last_collected_attempt_index = ROUND.parse_int(updated.get("last_collected_attempt_index"), 0)
         has_live_registry = row_has_live_registry_entry(updated, registry)
-        has_active_split = row_has_active_split(updated)
+        has_active_split = row_has_active_split(updated, registry)
         attempt_start_prefix_rows = ROUND.parse_int(updated.get("attempt_start_prefix_rows"), 0)
         current_progress_rows = min(
             ROUND.parse_int(updated.get("last_seen_classifier_rows"), 0),
@@ -534,6 +559,10 @@ def verification_gate_state(row: dict[str, str]) -> tuple[str, str]:
                 seen_task_indexes.add(task_index)
                 verdict = str(report_row.get("verdict") or "").strip()
                 recommended_action = str(report_row.get("recommended_action") or "").strip()
+                if verdict not in ALLOWED_VERDICTS:
+                    return "pending", "invalid_verifier_verdict"
+                if recommended_action not in ALLOWED_VERIFICATION_ACTIONS:
+                    return "pending", "invalid_verifier_action"
                 if verdict and verdict != "pass" and not recommended_action:
                     return "pending", "non_pass_without_action"
                 if recommended_action in {"rerun_batch", "rerun_investor"}:
@@ -551,12 +580,55 @@ def verification_gate_state(row: dict[str, str]) -> tuple[str, str]:
             and not seen_task_indexes
             and verification_summary_is_uninitialized(summary_path)
         ):
-            # Legacy round-mode runs collected with --skip-verification and left the
-            # verifier report/summary as empty templates. Queue mode must not deadlock
-            # forever on those uninitialized artifacts.
-            return "ready_skip_verification", "legacy_uninitialized_verifier"
+            return "pending", "required_verifier_not_started"
         return "pending", "missing_verifier_rows"
     return "ready", ""
+
+
+def verification_gate_summary(collect_queue: list[dict[str, str]]) -> dict[str, Any]:
+    state_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    blocked_samples: list[dict[str, Any]] = []
+    for row in collect_queue:
+        gate_state, gate_reason = verification_gate_state(row)
+        state_counts[gate_state] = state_counts.get(gate_state, 0) + 1
+        if gate_state == "ready":
+            continue
+        reason = gate_reason or "unknown"
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if len(blocked_samples) < 20:
+            blocked_samples.append(
+                {
+                    "batch_file": row.get("batch_file") or "",
+                    "round_index": ROUND.parse_int(row.get("round_index"), 0),
+                    "attempt_index": ROUND.parse_int(row.get("attempt_index"), 0),
+                    "gate_state": gate_state,
+                    "gate_reason": reason,
+                }
+            )
+    return {
+        "state_counts": state_counts,
+        "reason_counts": reason_counts,
+        "blocked_samples": blocked_samples,
+    }
+
+
+def collect_queue_payload(collect_queue: list[dict[str, str]]) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for row in collect_queue:
+        gate_state, gate_reason = verification_gate_state(row)
+        payload.append(
+            {
+                "batch_file": row.get("batch_file") or "",
+                "round_index": ROUND.parse_int(row.get("round_index"), 0),
+                "attempt_index": ROUND.parse_int(row.get("attempt_index"), 0),
+                "collect_state": row.get("collect_state") or "",
+                "ready_to_collect_at": row.get("ready_to_collect_at") or "",
+                "verification_gate_state": gate_state,
+                "verification_gate_reason": gate_reason,
+            }
+        )
+    return payload
 
 
 def deferred_rows(schedule_rows: list[dict[str, str]], target_rounds: list[int]) -> list[dict[str, str]]:
@@ -584,7 +656,7 @@ def active_running_rows(
 
 
 def live_worker_process_count(registry: list[dict[str, Any]]) -> int:
-    return sum(1 for entry in registry if ROUND.process_alive(ROUND.parse_int(entry.get("pid"), 0)))
+    return sum(1 for entry in registry if ROUND.registry_entry_alive(entry))
 
 
 def build_slots(
@@ -613,7 +685,7 @@ def build_slots(
             for entry in registry
             if str(entry.get("batch_file") or "") == batch_file
             and ROUND.parse_int(entry.get("attempt_index"), 0) == attempt_index
-            and ROUND.process_alive(ROUND.parse_int(entry.get("pid"), 0))
+            and ROUND.registry_entry_alive(entry)
         )
         slots.append(
             {
@@ -623,7 +695,7 @@ def build_slots(
                 "round_index": ROUND.parse_int(row.get("round_index"), 0),
                 "attempt_index": attempt_index,
                 "queue_state": row.get("queue_state") or "",
-                "split_recovery": row_has_active_split(row),
+                "split_recovery": row_has_active_split(row, registry),
                 "pid_count": pid_count,
             }
         )
@@ -643,6 +715,7 @@ def write_state(
     waiting = waiting_rows(schedule_rows, target_rounds)
     tail_retry_queue = tail_retry_rows(schedule_rows, target_rounds)
     collect_queue = ready_to_collect_rows(schedule_rows, target_rounds)
+    gate_summary = verification_gate_summary(collect_queue)
     deferred_queue = deferred_rows(schedule_rows, target_rounds)
     slots = build_slots(
         schedule_rows,
@@ -701,6 +774,7 @@ def write_state(
                 [ROUND.parse_int(row.get("round_index"), 0) for row in deferred_queue]
             ) if deferred_queue else None,
         },
+        "verification_gate_summary": gate_summary,
         "phase": phase,
         "scheduler_mode": "queue",
         "strict_wait_for_all_rounds": False,
@@ -727,16 +801,7 @@ def write_state(
             }
             for row in tail_retry_queue
         ],
-        "collect_queue": [
-            {
-                "batch_file": row.get("batch_file") or "",
-                "round_index": ROUND.parse_int(row.get("round_index"), 0),
-                "attempt_index": ROUND.parse_int(row.get("attempt_index"), 0),
-                "collect_state": row.get("collect_state") or "",
-                "ready_to_collect_at": row.get("ready_to_collect_at") or "",
-            }
-            for row in collect_queue
-        ],
+        "collect_queue": collect_queue_payload(collect_queue),
         "deferred_queue": [
             {
                 "batch_file": row.get("batch_file") or "",
@@ -847,7 +912,6 @@ def run_collect_for_batches(
     runs_dir: Path,
     final_dir: Path,
     events_log: Path,
-    skip_verification: bool = False,
 ) -> bool:
     final_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -868,8 +932,6 @@ def run_collect_for_batches(
         "--checkpoint-json",
         str((runs_dir / ROUND.DEFAULT_COLLECT_CHECKPOINT_JSON).resolve()),
     ]
-    if skip_verification:
-        cmd.append("--skip-verification")
     for batch_file in batch_files:
         cmd.extend(["--batch-file", batch_file])
     completed = ROUND.run_command(cmd, cwd=ROUND.REPO_ROOT, events_log=events_log, label="collect_batches")
@@ -1166,7 +1228,13 @@ def tail_retry_drain_budget(
     *,
     process_budget: int,
 ) -> int:
-    if process_budget <= 0 or ready_to_collect_rows(schedule_rows, target_rounds):
+    if process_budget <= 0:
+        return 0
+    ready_collect = [
+        row for row in ready_to_collect_rows(schedule_rows, target_rounds)
+        if verification_gate_state(row)[0] == "ready"
+    ]
+    if ready_collect:
         return 0
     if not tail_retry_rows(schedule_rows, target_rounds):
         return 0
@@ -1967,7 +2035,6 @@ def main() -> None:
 
         collect_rows = ready_to_collect_rows(schedule_rows, target_rounds)
         collect_row: dict[str, str] | None = None
-        collect_skip_verification = False
         verifier_rerun_row: tuple[dict[str, str], str] | None = None
         for row in collect_rows:
             gate_state, gate_reason = verification_gate_state(row)
@@ -1976,11 +2043,6 @@ def main() -> None:
                 break
             if gate_state == "ready":
                 collect_row = row
-                collect_skip_verification = False
-                break
-            if gate_state == "ready_skip_verification":
-                collect_row = row
-                collect_skip_verification = True
                 break
 
         if verifier_rerun_row is not None:
@@ -2004,11 +2066,6 @@ def main() -> None:
                 events_log,
                 f"[queue:collect_start] batch={batch_file} attempt={collect_row.get('attempt_index', '')}",
             )
-            if collect_skip_verification:
-                ROUND.log_event(
-                    events_log,
-                    f"[queue:collect_skip_verification] batch={batch_file} reason=legacy_uninitialized_verifier",
-                )
             schedule_rows = mark_batches_collecting(schedule_rows, [batch_file])
             save_schedule(schedule_csv, fieldnames, schedule_rows)
             write_state(
@@ -2046,7 +2103,6 @@ def main() -> None:
                 runs_dir=runs_dir,
                 final_dir=final_dir,
                 events_log=events_log,
-                skip_verification=collect_skip_verification,
             )
             registry = ROUND.cleanup_registry(ROUND.load_registry(registry_json))
             ROUND.save_registry(registry_json, registry)
@@ -2065,6 +2121,9 @@ def main() -> None:
             save_schedule(schedule_csv, fieldnames, schedule_rows)
             ROUND.log_event(events_log, f"[queue:collect_complete] batch={batch_file}")
             continue
+
+        if collect_rows:
+            phase = "waiting_for_verifier"
 
         write_state(
             state_json,

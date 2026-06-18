@@ -52,6 +52,21 @@ LIST_COLUMNS = [
     "other_flags",
 ]
 SOURCE_TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
+UNRESOLVED_IDENTITY_FLAGS = {
+    "identity_unresolved",
+    "no_current_official_source_found",
+    "no_reliable_current_source_found",
+    "no_reliable_external_match",
+}
+UNRESOLVED_IDENTITY_SUMMARY_MARKERS = (
+    "no reliable",
+    "did not surface",
+    "did not resolve",
+    "no trustworthy source",
+    "could not find",
+    "not find",
+    "unresolved",
+)
 
 RUNTIME_ACTIVE_STATUSES = {"prepared", "running", "needs_rerun", "completed", "deferred_long_tail"}
 RUNTIME_RESOLVED_STATUSES = {"completed", "deferred_long_tail"}
@@ -139,11 +154,6 @@ def parse_args() -> argparse.Namespace:
         "--allow-unresolved-verification",
         action="store_true",
         help="Allow merge when verifier recommends edit/rerun/process updates. Intended only for debug.",
-    )
-    parser.add_argument(
-        "--skip-verification",
-        action="store_true",
-        help="Skip mandatory verifier checks. Intended only for legacy/debug runs.",
     )
     parser.add_argument(
         "--replace-output",
@@ -996,6 +1006,24 @@ def looks_like_source_type_pipe_list(value: object) -> bool:
     return bool(parts) and all(SOURCE_TYPE_PATTERN.match(part) for part in parts)
 
 
+def allows_blank_evidence_for_unresolved_identity(row: dict[str, str]) -> bool:
+    if (row.get("needs_manual_review") or "").strip() != "yes":
+        return False
+    if (row.get("confidence") or "").strip() != "low":
+        return False
+    if capability_labels_from_row(row):
+        return False
+
+    flags = {str(flag).strip() for flag in parse_json_list(row.get("other_flags", ""))}
+    if not (flags & UNRESOLVED_IDENTITY_FLAGS):
+        return False
+
+    summary = (row.get("evidence_summary") or "").strip().lower()
+    if not summary:
+        return False
+    return any(marker in summary for marker in UNRESOLVED_IDENTITY_SUMMARY_MARKERS)
+
+
 def repair_shifted_result_row(row: dict[str, str]) -> dict[str, str]:
     repaired = dict(row)
 
@@ -1133,9 +1161,10 @@ def validate_result_row(row: dict[str, str], source: Path) -> list[str]:
     if not evidence_summary:
         errors.append("evidence_summary is blank")
     if (row.get("capability_search_required") or "").strip() == "yes":
-        if not evidence_urls:
+        allow_blank_unresolved_identity = allows_blank_evidence_for_unresolved_identity(row)
+        if not evidence_urls and not allow_blank_unresolved_identity:
             errors.append("searched rows require non-empty evidence_urls")
-        if not evidence_source_types:
+        if not evidence_source_types and not allow_blank_unresolved_identity:
             errors.append("searched rows require non-empty evidence_source_types")
         if evidence_summary.lower() in {"yes", "no"}:
             errors.append("searched rows must summarize evidence in evidence_summary, not bare yes/no")
@@ -1429,11 +1458,11 @@ def collect_verification_rows(
     schedule_rows: list[dict[str, str]],
     worker_rows_by_task: dict[int, dict[str, str]],
     classifier_rows_by_task: dict[int, dict[str, str]],
-    skip_verification: bool,
+    validate_verification: bool,
     allow_unresolved_verification: bool,
     identity_override_tracker: dict[str, object] | None = None,
 ) -> tuple[list[dict[str, str]], list[str]]:
-    if skip_verification:
+    if not validate_verification:
         return [], []
 
     validation_errors: list[str] = []
@@ -1812,6 +1841,22 @@ def build_source_to_schedule_row(schedule_rows: list[dict[str, str]]) -> dict[st
     return mapping
 
 
+def source_is_verification_artifact(source_label: str | None, schedule_row: dict[str, str]) -> bool:
+    if not source_label:
+        return False
+    try:
+        source_path = str(resolve_path(source_label))
+    except (OSError, RuntimeError):
+        source_path = source_label
+    for key in ["verification_report_csv", "verification_summary_md"]:
+        raw = (schedule_row.get(key) or "").strip()
+        if not raw:
+            continue
+        if source_path == str(resolve_path(raw)):
+            return True
+    return False
+
+
 def infer_rerun_category(error: str) -> str | None:
     if "header mismatch" in error:
         return "header_mismatch"
@@ -1873,6 +1918,8 @@ def analyze_lint_failures(
             if task_index is not None:
                 schedule_row = task_index_to_schedule.get(task_index)
         if not schedule_row:
+            continue
+        if source_is_verification_artifact(source_label, schedule_row):
             continue
 
         bucket = ensure_bucket(schedule_row)
@@ -2094,8 +2141,7 @@ def write_lint_rerun_plan(runs_dir: Path, rerun_rows: list[dict[str, str]]) -> N
 
     if not rerun_rows:
         for path in [csv_path, md_path]:
-            if path.exists():
-                path.unlink()
+            path.unlink(missing_ok=True)
         return
 
     write_csv(
@@ -2477,7 +2523,7 @@ def main() -> None:
         repaired_identity_files = rewrite_identity_fields_in_place(schedule_rows)
 
     identity_override_tracker = make_identity_override_tracker()
-    skip_verification = args.skip_verification or args.lint_only
+    validate_verification = not args.lint_only
     pipeline_schedule_rows = schedule_rows
     scoped_round_indexes: list[int] = []
     scoped_batch_files = resolve_batch_scope(schedule_rows, args.batch_file)
@@ -2545,7 +2591,7 @@ def main() -> None:
         schedule_rows=pipeline_schedule_rows,
         worker_rows_by_task=worker_rows_by_task,
         classifier_rows_by_task=classifier_rows_by_task,
-        skip_verification=skip_verification,
+        validate_verification=validate_verification,
         allow_unresolved_verification=args.allow_unresolved_verification,
         identity_override_tracker=identity_override_tracker,
     )

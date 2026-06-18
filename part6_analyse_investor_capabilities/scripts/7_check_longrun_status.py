@@ -731,6 +731,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         "earliest_open_round_index": earliest_open_round_index,
         "active_progress": active_progress,
         "backlog_summary": backlog_summary,
+        "verification_gate_summary": state.get("verification_gate_summary") if state else None,
         "target_rounds": state.get("target_rounds") if state else None,
         "max_workers": state.get("max_workers") if state else None,
         "slots": state.get("slots") if state else None,
@@ -819,6 +820,14 @@ def print_human(payload: dict[str, object]) -> None:
             f"tail_retry={backlog_summary.get('tail_retry_count')}@group{backlog_summary.get('tail_retry_earliest_round_index')} "
             f"collect={backlog_summary.get('collect_count')}@group{backlog_summary.get('collect_earliest_round_index')} "
             f"deferred={backlog_summary.get('deferred_count')}@group{backlog_summary.get('deferred_earliest_round_index')}"
+        )
+
+    gate_summary = payload.get("verification_gate_summary")
+    if isinstance(gate_summary, dict):
+        print(
+            "verification_gate_summary: "
+            f"states={gate_summary.get('state_counts')} "
+            f"reasons={gate_summary.get('reason_counts')}"
         )
 
     target_rounds = payload.get("target_rounds")

@@ -1593,6 +1593,9 @@ def watch_round(
 def main() -> None:
     args = parse_args()
     runs_dir = args.runs_dir.resolve()
+    stop_flag = runs_dir / "controller_stop.request"
+    if stop_flag.exists():
+        raise SystemExit(f"Controller stop requested by {stop_flag}")
     schedule_csv = resolve_path(args.schedule_csv) if args.schedule_csv else runs_dir / "schedule.csv"
     policy = load_policy(resolve_path(args.policy_json))
     fieldnames, schedule_rows = load_schedule(schedule_csv, policy)

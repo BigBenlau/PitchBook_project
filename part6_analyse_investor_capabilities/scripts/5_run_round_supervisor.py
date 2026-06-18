@@ -786,6 +786,28 @@ def process_alive(pid: int) -> bool:
     return True
 
 
+def process_group_alive(pgid: int) -> bool:
+    if pgid <= 0:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def registry_entry_alive(entry: dict[str, Any]) -> bool:
+    pid = parse_int(entry.get("pid"), 0)
+    if process_alive(pid):
+        return True
+    pgid = parse_int(entry.get("pgid"), 0)
+    return process_group_alive(pgid)
+
+
 def resolve_codex_bin(binary: str) -> str:
     candidate = str(binary or "").strip()
     if not candidate:
@@ -810,8 +832,28 @@ def process_cmdline(pid: int) -> str:
         return ""
 
 
+def process_cmdline_args(pid: int) -> list[str]:
+    if pid <= 0:
+        return []
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [
+        part.decode("utf-8", errors="ignore")
+        for part in raw.split(b"\x00")
+        if part
+    ]
+
+
 def supervisor_process_matches(pid: int, *, runs_dir: Path) -> bool:
-    cmdline = process_cmdline(pid)
+    args = process_cmdline_args(pid)
+    if not args:
+        return False
+    executable = Path(args[0]).name
+    if executable in {"bash", "sh", "dash", "zsh"}:
+        return False
+    cmdline = " ".join(args)
     if not cmdline:
         return False
     return (
@@ -831,6 +873,7 @@ def acquire_supervisor_lock(path: Path, *, runs_dir: Path) -> None:
         existing_runs_dir = str(payload.get("runs_dir") or "")
         if (
             existing_pid > 0
+            and existing_pid != os.getpid()
             and process_alive(existing_pid)
             and supervisor_process_matches(existing_pid, runs_dir=Path(existing_runs_dir or runs_dir))
         ):
@@ -857,21 +900,17 @@ def acquire_supervisor_lock(path: Path, *, runs_dir: Path) -> None:
     atexit.register(_cleanup)
 
 
-def terminate_pid(pid: int, events_log: Path, reason: str) -> None:
-    if pid <= 0 or not process_alive(pid):
+def terminate_process_group(pgid: int, events_log: Path, reason: str) -> None:
+    if pgid <= 0 or not process_group_alive(pgid):
         return
-    log_event(events_log, f"[worker:terminate] pid={pid} reason={reason}")
-    try:
-        pgid = os.getpgid(pid)
-    except ProcessLookupError:
-        return
+    log_event(events_log, f"[worker:terminate] pgid={pgid} reason={reason}")
     try:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return
     deadline = time.time() + 10
     while time.time() < deadline:
-        if not process_alive(pid):
+        if not process_group_alive(pgid):
             return
         time.sleep(0.25)
     try:
@@ -880,11 +919,28 @@ def terminate_pid(pid: int, events_log: Path, reason: str) -> None:
         return
 
 
+def terminate_pid(pid: int, events_log: Path, reason: str) -> None:
+    if pid <= 0 or not process_alive(pid):
+        return
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    terminate_process_group(pgid, events_log, reason)
+
+
+def terminate_registry_entry(entry: dict[str, Any], events_log: Path, reason: str) -> None:
+    pgid = parse_int(entry.get("pgid"), 0)
+    if pgid > 0:
+        terminate_process_group(pgid, events_log, reason)
+        return
+    terminate_pid(parse_int(entry.get("pid"), 0), events_log, reason)
+
+
 def cleanup_registry(registry: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cleaned: list[dict[str, Any]] = []
     for item in registry:
-        pid = parse_int(item.get("pid"), 0)
-        if process_alive(pid):
+        if registry_entry_alive(item):
             cleaned.append(item)
     return cleaned
 
@@ -902,7 +958,7 @@ def terminate_for_batch_files(
     for entry in registry:
         entry_batch = str(entry.get("batch_file") or "").strip()
         if entry_batch in batch_files:
-            terminate_pid(parse_int(entry.get("pid"), 0), events_log, reason)
+            terminate_registry_entry(entry, events_log, reason)
         else:
             remaining.append(entry)
     return cleanup_registry(remaining)
@@ -924,7 +980,7 @@ def terminate_for_round(round_index: int, registry: list[dict[str, Any]], events
     remaining: list[dict[str, Any]] = []
     for entry in registry:
         if parse_int(entry.get("round_index"), 0) == round_index:
-            terminate_pid(parse_int(entry.get("pid"), 0), events_log, f"round_{round_index}_cleanup")
+            terminate_registry_entry(entry, events_log, f"round_{round_index}_cleanup")
         else:
             remaining.append(entry)
     return cleanup_registry(remaining)
@@ -944,7 +1000,7 @@ def active_full_batch_pid(
         if parse_int(entry.get("attempt_index"), 0) != attempt_index:
             continue
         pid = parse_int(entry.get("pid"), 0)
-        if process_alive(pid):
+        if registry_entry_alive(entry):
             return pid
     return 0
 
@@ -1073,11 +1129,7 @@ def terminate_for_actions(
     for entry in registry:
         matched = any(registry_match(action, entry) for action in actions)
         if matched:
-            terminate_pid(
-                parse_int(entry.get("pid"), 0),
-                events_log,
-                f"runtime_action:{entry.get('batch_file', '')}",
-            )
+            terminate_registry_entry(entry, events_log, f"runtime_action:{entry.get('batch_file', '')}")
         else:
             remaining.append(entry)
     return cleanup_registry(remaining)
@@ -1154,6 +1206,10 @@ def spawn_worker(
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        pgid = process.pid
     entry = {
         "round_index": parse_int(launch_row.get("round_index"), 0),
         "worker_slot": parse_int(launch_row.get("worker_slot"), 0),
@@ -1166,6 +1222,7 @@ def spawn_worker(
         "log_path": str(log_path),
         "final_message_path": str(final_message_path),
         "pid": process.pid,
+        "pgid": pgid,
         "started_at": iso_now(),
     }
     log_event(
@@ -1685,7 +1742,7 @@ def terminate_split_shard(
     remaining: list[dict[str, Any]] = []
     for entry in registry:
         if split_shard_registry_match(entry, batch_file=batch_file, attempt_index=attempt_index, shard_id=shard_id):
-            terminate_pid(parse_int(entry.get("pid"), 0), events_log, reason)
+            terminate_registry_entry(entry, events_log, reason)
         else:
             remaining.append(entry)
     return cleanup_registry(remaining)
@@ -1701,7 +1758,7 @@ def active_split_shard_pid(
     for entry in registry:
         if split_shard_registry_match(entry, batch_file=batch_file, attempt_index=attempt_index, shard_id=shard_id):
             pid = parse_int(entry.get("pid"), 0)
-            if process_alive(pid):
+            if registry_entry_alive(entry):
                 return pid
     return 0
 
@@ -1983,6 +2040,23 @@ def manage_split_recoveries(
             elapsed_since_start = int((now - started_at).total_seconds())
             elapsed_since_progress = int((now - last_progress_at).total_seconds())
 
+            if not alive_pid and str(shard.get("status") or "") != "completed":
+                respawn_reason = (
+                    "split_startup_no_row"
+                    if inspection["state"] == "header_only"
+                    else "split_process_exited"
+                )
+                split_state, registry = respawn_split_shard(
+                    updated,
+                    split_state,
+                    shard,
+                    registry=registry,
+                    codex_bin=codex_bin,
+                    events_log=events_log,
+                    reason=respawn_reason,
+                )
+                changed = True
+                continue
             if inspection["state"] == "header_only" and elapsed_since_start >= startup_timeout_seconds:
                 split_state, registry = respawn_split_shard(
                     updated,
@@ -2007,18 +2081,6 @@ def manage_split_recoveries(
                 )
                 changed = True
                 continue
-            if not alive_pid and str(shard.get("status") or "") != "completed":
-                split_state, registry = respawn_split_shard(
-                    updated,
-                    split_state,
-                    shard,
-                    registry=registry,
-                    codex_bin=codex_bin,
-                    events_log=events_log,
-                    reason="split_process_exited",
-                )
-                changed = True
-
         split_state["progress_classifier_rows"] = progress_classifier_rows
         split_state["progress_result_rows"] = progress_result_rows
         split_state["updated_at"] = now_iso
@@ -2189,7 +2251,6 @@ def run_collect(round_index: int, *, runs_dir: Path, events_log: Path) -> bool:
         str(round_index),
         "--repair-identity-drift-in-place",
         "--fail-on-identity-drift",
-        "--skip-verification",
         "--output-csv",
         str((final_dir / "results.csv").resolve()),
         "--manual-review-csv",
@@ -2580,8 +2641,7 @@ def shutil_which(binary: str) -> str | None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except BaseException as exc:
-        log_supervisor_terminal_failure(exc)
-        raise
+    raise SystemExit(
+        "Round-mode supervisor has been retired. Use "
+        "part6_analyse_investor_capabilities/scripts/5_run_queue_supervisor.py instead."
+    )
