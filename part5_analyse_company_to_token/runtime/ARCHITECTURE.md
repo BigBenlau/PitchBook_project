@@ -26,9 +26,10 @@
 
 ## Formal Result Contract
 
-Part5 final output has one formal token mapping field:
+Part5 final output has one formal token mapping field and one compact derived symbol field:
 
 - `token_results`: JSON object-list string of founding-entity token mappings.
+- `token_symbol`: JSON list string derived from `token_results[*].token_symbol`.
 
 No active runtime path should emit additional rule-specific token columns. Workers, verifier, collector, and supervisor must all use the same schema from `scripts/result_schema.py`.
 

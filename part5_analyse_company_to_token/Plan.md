@@ -6,7 +6,7 @@ Part5 maps each crypto-relevant company row to zero, one, or multiple fungible t
 
 A token may be included only when strong, direct, and stable evidence shows that the company is an officially recognized founding entity, co-founding entity, or original founding organization of the token's blockchain or protocol ecosystem.
 
-The final result must contain exactly one row per company. Multiple qualifying tokens stay in the same row as a JSON object-list string in `token_results`.
+The final result must contain exactly one row per company. Multiple qualifying tokens stay in the same row as a JSON object-list string in `token_results`, which is placed as the final CSV column to keep the wide object payload out of the middle of the table.
 
 ## Formal Inclusion Rule
 
@@ -41,13 +41,14 @@ Use `gpt-5.5` with `xhigh` reasoning as the default model for workers, reruns, a
 Result CSV header:
 
 ```text
-task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_results,token_decision_reason,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_symbol,token_decision_reason,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review,token_results
 ```
 
 List-valued fields:
 
 - `project_name`
 - `project_url`
+- `token_symbol`
 - `token_results`
 
 Each `token_results` object must include:
@@ -66,6 +67,7 @@ Each `token_results` object must include:
 Required row semantics:
 
 - `status` must be `completed`.
+- `token_symbol` must be a JSON list string equal to all `token_symbol` values extracted from `token_results`, in the same order.
 - `token_results` must be a valid JSON list string. Use `[]` when no qualifying token exists.
 - `token_decision_reason` is required when `token_results = []`.
 - `confidence` must be `high`, `medium`, or `low`.
@@ -133,6 +135,7 @@ All runtime-side writes to live `schedule.csv` must go through `scripts/part5_sc
 The current formal results were migrated from the previous founding-entity output. For every task row:
 
 - new `token_results` equals the previous founding-entity token result list
+- `token_symbol` is derived only from `token_results[*].token_symbol`
 - new `token_decision_reason` equals the previous founding-entity decision reason
 - row identity and order are unchanged
 - no company row is added or removed

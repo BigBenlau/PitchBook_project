@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from part5_schedule_io import write_schedule_csv
-from result_schema import RESULT_CSV_COLUMNS
+from result_schema import RESULT_CSV_COLUMNS, token_symbol_list_string
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PART5_DIR = SCRIPT_DIR.parent
@@ -226,6 +226,8 @@ def normalize_row_fields(row: dict[str, Any], fieldnames: list[str]) -> dict[str
     if fieldnames == RESULT_CSV_COLUMNS:
         if not normalized.get("token_results", "").strip():
             normalized["token_results"] = "[]"
+        if not normalized.get("token_symbol", "").strip():
+            normalized["token_symbol"] = token_symbol_list_string(normalized.get("token_results", ""))
         manual_value = normalized.get("needs_manual_review", "").strip()
         confidence_value = normalized.get("confidence", "").strip()
         if manual_value in {"low", "medium", "high"} and not confidence_value:

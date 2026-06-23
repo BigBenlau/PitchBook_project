@@ -60,10 +60,10 @@ Write exactly one result row per company.
 Result CSV header:
 
 ```text
-task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_results,token_decision_reason,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review
+task_index,company_id,company_name,normalized_domain,company_type,crypto_project_likelihood,project_search_required,project_search_reason,project_name,project_url,status,completed_at,token_symbol,token_decision_reason,has_token_evidence,evidence_urls,evidence_source_types,confidence,needs_manual_review,token_results
 ```
 
-`project_name`, `project_url`, and `token_results` must be valid JSON list strings.
+`project_name`, `project_url`, `token_symbol`, and `token_results` must be valid JSON list strings.
 
 Each `token_results` object must use:
 
@@ -81,6 +81,7 @@ Each `token_results` object must use:
 Rules:
 
 - `status = completed`.
+- `token_symbol` must equal all `token_symbol` values extracted from `token_results`, in the same order.
 - `token_results = []` when no formal founding-entity token mapping exists.
 - `token_decision_reason` must explain positive and negative decisions.
 - `has_token_evidence` must be a concise evidence summary, not bare `yes` or `no`.

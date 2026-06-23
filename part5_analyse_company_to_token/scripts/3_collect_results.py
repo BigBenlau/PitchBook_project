@@ -16,6 +16,7 @@ from result_schema import (
     RESULT_CSV_COLUMNS,
     TOKEN_RESULT_COLUMNS,
     VERIFICATION_CSV_COLUMNS,
+    token_symbol_list_string,
 )
 
 
@@ -1110,6 +1111,9 @@ def normalize_token_decision_fields(row: dict[str, str]) -> dict[str, str]:
         normalized[column] = normalize_json_list_string(normalized.get(column, ""))
         if not normalized[column]:
             normalized[column] = "[]"
+    normalized["token_symbol"] = normalize_json_list_string(normalized.get("token_symbol", ""))
+    if not normalized["token_symbol"]:
+        normalized["token_symbol"] = token_symbol_list_string(normalized.get("token_results", ""))
     return normalized
 
 
@@ -1227,6 +1231,9 @@ def validate_result_row(row: dict[str, str], source: Path) -> list[str]:
         require_positive_fields=True,
     )
     errors.extend(token_result_errors)
+    derived_token_symbol = token_symbol_list_string(row.get("token_results", ""))
+    if normalize_json_list_string(row.get("token_symbol", "")) != derived_token_symbol:
+        errors.append("token_symbol must equal token_results[*].token_symbol")
     if token_count == 0 and not (row.get("token_decision_reason") or "").strip():
         errors.append("token_results=[] requires token_decision_reason")
     if row.get("project_search_required") == "no" and not (row.get("project_search_reason") or "").strip():

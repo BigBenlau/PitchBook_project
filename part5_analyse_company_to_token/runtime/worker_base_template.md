@@ -45,13 +45,15 @@ Formal token rule:
 - Exclude ordinary dApps, wallets, exchanges, DEXs, staking providers, validators without founding evidence, investors, launchpads, incubators, market makers, later ecosystem funds, portfolio companies, and ordinary ecosystem participants.
 - If multiple tokens qualify, keep one row and put all mappings in `token_results`.
 - If no token qualifies, set `token_results = []` and write a clear `token_decision_reason`.
+- Write `token_symbol` as the JSON list of every `token_symbol` value from `token_results`, in the same order.
+- Keep `token_results` in the final CSV column because it is the widest payload field.
 - Before closing a no-token row, run a bounded exact-domain, alias, former-name, and token-family probe when relevant.
 
 Evidence requirements:
 - Prefer official and primary sources.
 - Secondary sources may corroborate but should not replace direct founding-entity evidence for high-confidence inclusion.
 - Each token result object must include `token_symbol`, `token_name`, `token_url`, `reason`, `evidence_urls`, and `evidence_source_types`.
-- `project_name`, `project_url`, and `token_results` must be JSON-list strings.
+- `project_name`, `project_url`, `token_symbol`, and `token_results` must be JSON-list strings.
 - `has_token_evidence` must summarize evidence, not bare `yes` or `no`.
 - `evidence_urls` must be `|`-separated HTTP(S) URLs.
 - `evidence_source_types` must be `|`-separated lowercase labels.

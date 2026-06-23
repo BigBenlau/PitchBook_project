@@ -9,7 +9,8 @@ Files:
 
 Principles:
 - Part5 has one formal token mapping rule: include a token only when the company is an officially recognized founding entity, co-founding entity, or original founding organization of the blockchain/protocol ecosystem.
-- Final `results.csv` stores formal token mappings in `token_results`, a JSON object-list field.
+- Final `results.csv` stores formal token mappings in `token_results`, a JSON object-list field placed at the end of the row.
+- `token_symbol` is a compact JSON list derived from `token_results[*].token_symbol` for easier scanning.
 - `scripts/2_prepare_worker_runs.py` creates batch roots, stable base instructions, and initial attempt skeletons.
 - `scripts/4_manage_round_runtime.py` prepares launch queues, marks selected batches started, and watches startup/stall failures.
 - `scripts/5_run_round_supervisor.py` remains the blocking round-mode supervisor and shared helper layer.

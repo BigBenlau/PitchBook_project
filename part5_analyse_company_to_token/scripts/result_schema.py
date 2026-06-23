@@ -17,13 +17,14 @@ RESULT_CSV_COLUMNS = [
     "project_url",
     "status",
     "completed_at",
-    "token_results",
+    "token_symbol",
     "token_decision_reason",
     "has_token_evidence",
     "evidence_urls",
     "evidence_source_types",
     "confidence",
     "needs_manual_review",
+    "token_results",
 ]
 
 VERIFICATION_CSV_COLUMNS = [
@@ -49,6 +50,7 @@ TOKEN_RESULT_COLUMNS = [
 JSON_LIST_COLUMNS = [
     "project_name",
     "project_url",
+    "token_symbol",
     *TOKEN_RESULT_COLUMNS,
 ]
 
@@ -75,3 +77,18 @@ def json_list_string(value: Any) -> str:
     if isinstance(value, list):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return "[]"
+
+
+def token_symbol_list(token_results: Any) -> list[str]:
+    symbols: list[str] = []
+    for item in parse_json_list(token_results):
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("token_symbol", "") or "").strip()
+        if symbol:
+            symbols.append(symbol)
+    return symbols
+
+
+def token_symbol_list_string(token_results: Any) -> str:
+    return json.dumps(token_symbol_list(token_results), ensure_ascii=False, separators=(",", ":"))
